@@ -461,6 +461,9 @@ query_frontend:
     [api_timeout: <duration>]
 
     search:
+        # Maximum number of outstanding requests per tenant per frontend; requests beyond this error with HTTP 429.
+        # (default: 2000)
+        [max_outstanding_per_tenant: <int>]
 
         # The number of concurrent jobs to execute when searching the backend.
         # (default: 1000)
