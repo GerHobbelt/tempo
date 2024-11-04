@@ -228,6 +228,19 @@ distributor:
     # defaults to 0 which means that by default ResourceExhausted is not retried. Set this to a duration such as `1s` to
     # instruct the client how to retry.
     [retry_after_on_resource_exhausted: <duration> | default = '0' ]
+
+    # Optional.
+    # Configures usage trackers in the distributor which expose metrics of ingested traffic grouped by configurable
+    # attributes exposed on /usage_metrics.
+    usage:
+        cost_attribution:
+            # Enables the "cost-attribution" usage tracker. Per-tenant attributes are configured in overrides.
+            [enabled: <boolean> | default = false]
+            # Maximum number of series per tenant.
+            [max_cardinality: <int> | default = 10000]
+            # Interval after which a series is considered stale and will be deleted from the registry.
+            # Once a metrics series is deleted, it won't be emitted anymore, keeping active series low.
+            [stale_duration: <duration> | default = 15m0s]
 ```
 
 ## Ingester
@@ -370,6 +383,8 @@ metrics_generator:
             [peer_attributes: <list of string> | default = ["peer.service", "db.name", "db.system"] ]
 
             # Attribute Key to multiply span metrics
+            # Note that the attribute name is searched for in both
+            # resouce and span level attributes
             [span_multiplier_key: <string> | default = ""]
 
             # Enables additional labels for services and virtual nodes.
@@ -413,6 +428,8 @@ metrics_generator:
             [enable_target_info: <bool> | default = false]
 
             # Attribute Key to multiply span metrics
+            # Note that the attribute name is searched for in both
+            # resouce and span level attributes
             [span_multiplier_key: <string> | default = ""]
 
             # List of policies that will be applied to spans for inclusion or exclusion.
@@ -468,7 +485,7 @@ metrics_generator:
         [collection_interval: <duration> | default = 15s]
 
         # Interval after which a series is considered stale and will be deleted from the registry.
-        # Once a metrics series is deleted it won't be emitted anymore, keeping active series low.
+        # Once a metrics series is deleted, it won't be emitted anymore, keeping active series low.
         [stale_duration: <duration> | default = 15m]
 
         # A list of labels that will be added to all generated metrics.
@@ -664,6 +681,9 @@ query_frontend:
         # 0 disables this limit.
         [max_duration: <duration> | default = 3h ]
 
+        # Maximun number of exemplars per range query. Limited to 100.
+        [max_exemplars: <int> | default = 100 ]
+    
         # query_backend_after controls where the query-frontend searches for traces.
         # Time ranges older than query_backend_after will be searched in the backend/object storage only.
         # Time ranges between query_backend_after and now will be queried from the metrics-generators.
@@ -680,6 +700,7 @@ query_frontend:
         # If set to a non-zero value, it's value will be used to decide if query is within SLO or not.
         # Query is within SLO if it returned 200 within duration_slo seconds OR processed throughput_slo bytes/s data.
         [throughput_bytes_slo: <float> | default = 0 ]
+
 ```
 
 ## Querier
@@ -1717,6 +1738,13 @@ overrides:
           type: <string>, # type of the attribute. options: string
           scope: <string> # scope of the attribute. options: resource, span
         ]
+
+    # Cost attribution usage tracker configuration
+    cost_attribution:
+      # List of attributes to group ingested data by.  Map value is optional. Can be used to rename and
+      # combine attributes. 
+      dimensions: <map string to string>
+
 
   # Tenant-specific overrides settings configuration file. The empty string (default
   # value) disables using an overrides file.

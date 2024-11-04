@@ -2,6 +2,7 @@ package combiner
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/gogo/protobuf/proto"
 	"github.com/grafana/tempo/pkg/api"
+	tempo_io "github.com/grafana/tempo/pkg/io"
 	"github.com/grafana/tempo/pkg/model/trace"
 	"github.com/grafana/tempo/pkg/tempopb"
 )
@@ -66,7 +68,7 @@ func (c *traceByIDCombiner) AddResponse(r PipelineResponse) error {
 	}
 
 	// Read the body
-	buff, err := io.ReadAll(res.Body)
+	buff, err := tempo_io.ReadAllWithEstimate(res.Body, res.ContentLength)
 	if err != nil {
 		c.statusMessage = internalErrorMsg
 		return fmt.Errorf("error reading response body: %w", err)
@@ -83,6 +85,13 @@ func (c *traceByIDCombiner) AddResponse(r PipelineResponse) error {
 
 	// Consume the trace
 	_, err = c.c.Consume(resp.Trace)
+
+	if errors.Is(err, trace.ErrTraceTooLarge) {
+		c.code = http.StatusUnprocessableEntity
+		c.statusMessage = fmt.Sprint(err)
+		return nil
+	}
+
 	return err
 }
 
@@ -154,6 +163,11 @@ func (c *traceByIDCombiner) shouldQuit() bool {
 	// test special case for 404
 	if c.code == http.StatusNotFound {
 		return false
+	}
+
+	// test special case for 422
+	if c.code == http.StatusUnprocessableEntity {
+		return true
 	}
 
 	// bail on other 400s

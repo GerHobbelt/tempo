@@ -9,8 +9,6 @@ import (
 	"go.uber.org/atomic"
 )
 
-var _ metric = (*counter)(nil)
-
 type counter struct {
 	//nolint unused
 	metric
@@ -22,6 +20,8 @@ type counter struct {
 
 	onAddSeries    func(count uint32) bool
 	onRemoveSeries func(count uint32)
+
+	externalLabels map[string]string
 }
 
 type counterSeries struct {
@@ -33,14 +33,15 @@ type counterSeries struct {
 	// to the desired value.  This avoids Prometheus throwing away the first
 	// value in the series, due to the transition from null -> x.
 	firstSeries *atomic.Bool
+
+	lb         *labels.Builder
+	baseLabels labels.Labels
 }
 
 var (
 	_ Counter = (*counter)(nil)
 	_ metric  = (*counter)(nil)
 )
-
-const insertOffsetDuration = 1 * time.Second
 
 func (co *counterSeries) isNew() bool {
 	return co.firstSeries.Load()
@@ -50,7 +51,7 @@ func (co *counterSeries) registerSeenSeries() {
 	co.firstSeries.Store(false)
 }
 
-func newCounter(name string, onAddSeries func(uint32) bool, onRemoveSeries func(count uint32)) *counter {
+func newCounter(name string, onAddSeries func(uint32) bool, onRemoveSeries func(count uint32), externalLabels map[string]string) *counter {
 	if onAddSeries == nil {
 		onAddSeries = func(uint32) bool {
 			return true
@@ -65,6 +66,7 @@ func newCounter(name string, onAddSeries func(uint32) bool, onRemoveSeries func(
 		series:         make(map[uint64]*counterSeries),
 		onAddSeries:    onAddSeries,
 		onRemoveSeries: onRemoveSeries,
+		externalLabels: externalLabels,
 	}
 }
 
@@ -102,11 +104,24 @@ func (c *counter) Inc(labelValueCombo *LabelValueCombo, value float64) {
 }
 
 func (c *counter) newSeries(labelValueCombo *LabelValueCombo, value float64) *counterSeries {
+	// base labels
+	baseLabels := make(labels.Labels, 0, 1+len(c.externalLabels))
+
+	// add external labels
+	for name, value := range c.externalLabels {
+		baseLabels = append(baseLabels, labels.Label{Name: name, Value: value})
+	}
+
+	// add metric name
+	baseLabels = append(baseLabels, labels.Label{Name: labels.MetricName, Value: c.metricName})
+
 	return &counterSeries{
 		labels:      labelValueCombo.getLabelPair(),
 		value:       atomic.NewFloat64(value),
 		lastUpdated: atomic.NewInt64(time.Now().UnixMilli()),
 		firstSeries: atomic.NewBool(true),
+		lb:          labels.NewBuilder(baseLabels),
+		baseLabels:  baseLabels,
 	}
 }
 
@@ -119,60 +134,40 @@ func (c *counter) name() string {
 	return c.metricName
 }
 
-func (c *counter) collectMetrics(appender storage.Appender, timeMs int64, externalLabels map[string]string) (activeSeries int, err error) {
+func (c *counter) collectMetrics(appender storage.Appender, timeMs int64) (activeSeries int, err error) {
 	c.seriesMtx.RLock()
 	defer c.seriesMtx.RUnlock()
 
 	activeSeries = len(c.series)
 
-	labelsCount := 0
-	if activeSeries > 0 && c.series[0] != nil {
-		labelsCount = len(c.series[0].labels.names)
-	}
-
-	// base labels
-	baseLabels := make(labels.Labels, 0, 1+len(externalLabels)+labelsCount)
-
-	// add external labels
-	for name, value := range externalLabels {
-		baseLabels = append(baseLabels, labels.Label{Name: name, Value: value})
-	}
-
-	// add metric name
-	baseLabels = append(baseLabels, labels.Label{Name: labels.MetricName, Value: c.metricName})
-
-	lb := labels.NewBuilder(baseLabels)
-
 	for _, s := range c.series {
-		t := time.UnixMilli(timeMs)
-
-		// reset labels for every series
-		lb.Reset(baseLabels)
+		s.lb.Reset(s.baseLabels)
 
 		// set series-specific labels
 		for i, name := range s.labels.names {
-			lb.Set(name, s.labels.values[i])
+			s.lb.Set(name, s.labels.values[i])
 		}
 
 		// If we are about to call Append for the first time on a series, we need
 		// to first insert a 0 value to allow Prometheus to start from a non-null
 		// value.
 		if s.isNew() {
-			_, err = appender.Append(0, lb.Labels(), timeMs, 0)
+			// We set the timestamp of the init serie at the end of the previous minute, that way we ensure it ends in a
+			// different aggregation interval to avoid be downsampled.
+			endOfLastMinuteMs := getEndOfLastMinuteMs(timeMs)
+			_, err = appender.Append(0, s.lb.Labels(), endOfLastMinuteMs, 0)
 			if err != nil {
 				return
 			}
-			// Increment timeMs to ensure that the next value is not at the same time.
-			t = t.Add(insertOffsetDuration)
 			s.registerSeenSeries()
 		}
 
-		_, err = appender.Append(0, lb.Labels(), t.UnixMilli(), s.value.Load())
+		_, err = appender.Append(0, s.lb.Labels(), timeMs, s.value.Load())
 		if err != nil {
 			return
 		}
 
-		// TODO support exemplars
+		// TODO: support exemplars
 	}
 
 	return
