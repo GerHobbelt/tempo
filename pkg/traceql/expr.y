@@ -29,7 +29,7 @@ import (
     wrappedScalarPipeline Pipeline
     scalarPipeline Pipeline
     aggregate Aggregate
-    metricsAggregation *MetricsAggregate
+    metricsAggregation metricsFirstStageElement
 
     fieldExpression FieldExpression
     static Static
@@ -94,11 +94,11 @@ import (
                         KIND_UNSPECIFIED KIND_INTERNAL KIND_SERVER KIND_CLIENT KIND_PRODUCER KIND_CONSUMER
                         IDURATION CHILDCOUNT NAME STATUS STATUS_MESSAGE PARENT KIND ROOTNAME ROOTSERVICENAME 
                         ROOTSERVICE TRACEDURATION NESTEDSETLEFT NESTEDSETRIGHT NESTEDSETPARENT ID TRACE_ID SPAN_ID
-                        PARENT_DOT RESOURCE_DOT SPAN_DOT TRACE_COLON SPAN_COLON EVENT_COLON LINK_COLON
+                        PARENT_DOT RESOURCE_DOT SPAN_DOT TRACE_COLON SPAN_COLON EVENT_COLON EVENT_DOT LINK_COLON LINK_DOT
                         COUNT AVG MAX MIN SUM
                         BY COALESCE SELECT
                         END_ATTRIBUTE
-                        RATE COUNT_OVER_TIME QUANTILE_OVER_TIME HISTOGRAM_OVER_TIME
+                        RATE COUNT_OVER_TIME QUANTILE_OVER_TIME HISTOGRAM_OVER_TIME COMPARE
                         WITH
 
 // Operators are listed with increasing precedence.
@@ -300,6 +300,9 @@ metricsAggregation:
     | QUANTILE_OVER_TIME OPEN_PARENS attribute COMMA numericList CLOSE_PARENS BY OPEN_PARENS attributeList CLOSE_PARENS { $$ = newMetricsAggregateQuantileOverTime($3, $5, $9) }
     | HISTOGRAM_OVER_TIME OPEN_PARENS attribute CLOSE_PARENS                                                            { $$ = newMetricsAggregateHistogramOverTime($3, nil) }
     | HISTOGRAM_OVER_TIME OPEN_PARENS attribute CLOSE_PARENS BY OPEN_PARENS attributeList CLOSE_PARENS                  { $$ = newMetricsAggregateHistogramOverTime($3, $7) }
+    | COMPARE OPEN_PARENS spansetFilter CLOSE_PARENS                                                                    { $$ = newMetricsCompare($3, 10, 0, 0)}
+    | COMPARE OPEN_PARENS spansetFilter COMMA INTEGER CLOSE_PARENS                                                      { $$ = newMetricsCompare($3, $5, 0, 0)}
+    | COMPARE OPEN_PARENS spansetFilter COMMA INTEGER COMMA INTEGER COMMA INTEGER CLOSE_PARENS                          { $$ = newMetricsCompare($3, $5, $7, $9)}
   ;
 
 // **********************
@@ -402,10 +405,10 @@ scopedIntrinsicField:
   | SPAN_COLON STATUS_MESSAGE    { $$ = NewIntrinsic(IntrinsicStatusMessage)       }
   | SPAN_COLON ID                { $$ = NewIntrinsic(IntrinsicSpanID)              }
 // event:
-  | EVENT_COLON NAME 	         { $$ = NewIntrinsic(IntrinsicEventName)           }
+  | EVENT_COLON NAME             { $$ = NewIntrinsic(IntrinsicEventName)           }
 // link:
-  | LINK_COLON TRACE_ID 	 { $$ = NewIntrinsic(IntrinsicLinkTraceID)         }
-  | LINK_COLON SPAN_ID 	         { $$ = NewIntrinsic(IntrinsicLinkSpanID)          }
+  | LINK_COLON TRACE_ID          { $$ = NewIntrinsic(IntrinsicLinkTraceID)         }
+  | LINK_COLON SPAN_ID           { $$ = NewIntrinsic(IntrinsicLinkSpanID)          }
   ;
 
 attributeField:
@@ -415,4 +418,6 @@ attributeField:
   | PARENT_DOT IDENTIFIER END_ATTRIBUTE               { $$ = NewScopedAttribute(AttributeScopeNone, true, $2)      }
   | PARENT_DOT RESOURCE_DOT IDENTIFIER END_ATTRIBUTE  { $$ = NewScopedAttribute(AttributeScopeResource, true, $3)  }
   | PARENT_DOT SPAN_DOT IDENTIFIER END_ATTRIBUTE      { $$ = NewScopedAttribute(AttributeScopeSpan, true, $3)      }
+  | EVENT_DOT IDENTIFIER END_ATTRIBUTE                { $$ = NewScopedAttribute(AttributeScopeEvent, false, $2)    }
+  | LINK_DOT IDENTIFIER END_ATTRIBUTE                 { $$ = NewScopedAttribute(AttributeScopeLink, false, $2)     }
   ;
