@@ -42,17 +42,17 @@ type (
 )
 
 type QueryFrontend struct {
-	TraceByIDHandler, SearchHandler, MetricsSummaryHandler, MetricsQueryInstantHandler, MetricsQueryRangeHandler http.Handler
-	SearchTagsHandler, SearchTagsV2Handler, SearchTagsValuesHandler, SearchTagsValuesV2Handler                   http.Handler
-	cacheProvider                                                                                                cache.Provider
-	streamingSearch                                                                                              streamingSearchHandler
-	streamingTags                                                                                                streamingTagsHandler
-	streamingTagsV2                                                                                              streamingTagsV2Handler
-	streamingTagValues                                                                                           streamingTagValuesHandler
-	streamingTagValuesV2                                                                                         streamingTagValuesV2Handler
-	streamingQueryRange                                                                                          streamingQueryRangeHandler
-	streamingQueryInstant                                                                                        streamingQueryInstantHandler
-	logger                                                                                                       log.Logger
+	TraceByIDHandler, TraceByIDHandlerV2, SearchHandler, MetricsSummaryHandler, MetricsQueryInstantHandler, MetricsQueryRangeHandler http.Handler
+	SearchTagsHandler, SearchTagsV2Handler, SearchTagsValuesHandler, SearchTagsValuesV2Handler                                       http.Handler
+	cacheProvider                                                                                                                    cache.Provider
+	streamingSearch                                                                                                                  streamingSearchHandler
+	streamingTags                                                                                                                    streamingTagsHandler
+	streamingTagsV2                                                                                                                  streamingTagsV2Handler
+	streamingTagValues                                                                                                               streamingTagValuesHandler
+	streamingTagValuesV2                                                                                                             streamingTagValuesV2Handler
+	streamingQueryRange                                                                                                              streamingQueryRangeHandler
+	streamingQueryInstant                                                                                                            streamingQueryInstantHandler
+	logger                                                                                                                           log.Logger
 }
 
 // New returns a new QueryFrontend
@@ -141,7 +141,8 @@ func New(cfg Config, next http.RoundTripper, o overrides.Interface, reader tempo
 		[]pipeline.Middleware{cacheWare, statusCodeWare, retryWare},
 		next)
 
-	traces := newTraceIDHandler(cfg, o, tracePipeline, logger)
+	traces := newTraceIDHandler(cfg, tracePipeline, o, combiner.NewTraceByID, logger)
+	tracesV2 := newTraceIDHandler(cfg, tracePipeline, o, combiner.NewTraceByIDV2, logger)
 	search := newSearchHTTPHandler(cfg, searchPipeline, logger)
 	searchTags := newTagHTTPHandler(cfg, searchTagsPipeline, o, combiner.NewSearchTags, logger)
 	searchTagsV2 := newTagHTTPHandler(cfg, searchTagsPipeline, o, combiner.NewSearchTagsV2, logger)
@@ -154,6 +155,7 @@ func New(cfg Config, next http.RoundTripper, o overrides.Interface, reader tempo
 	return &QueryFrontend{
 		// http/discrete
 		TraceByIDHandler:           newHandler(cfg.Config.LogQueryRequestHeaders, traces, logger),
+		TraceByIDHandlerV2:         newHandler(cfg.Config.LogQueryRequestHeaders, tracesV2, logger),
 		SearchHandler:              newHandler(cfg.Config.LogQueryRequestHeaders, search, logger),
 		SearchTagsHandler:          newHandler(cfg.Config.LogQueryRequestHeaders, searchTags, logger),
 		SearchTagsV2Handler:        newHandler(cfg.Config.LogQueryRequestHeaders, searchTagsV2, logger),
@@ -219,6 +221,9 @@ func newMetricsSummaryHandler(next pipeline.AsyncRoundTripper[combiner.PipelineR
 			}, nil
 		}
 		prepareRequestForQueriers(req, tenant)
+		// This API is always json because it only ever has 1 job and this
+		// lets us return the response as-is.
+		req.Header.Set(api.HeaderAccept, api.HeaderAcceptJSON)
 
 		level.Info(logger).Log(
 			"msg", "metrics summary request",
@@ -248,6 +253,11 @@ func newMetricsSummaryHandler(next pipeline.AsyncRoundTripper[combiner.PipelineR
 func prepareRequestForQueriers(req *http.Request, tenant string) {
 	// set the tenant header
 	req.Header.Set(user.OrgIDHeaderName, tenant)
+
+	// All communication with the queriers should be proto for efficiency
+	// NOTE - This isn't strict and queriers may still return json if we missed
+	// an endpoint. But cache and response unmarshalling still work.
+	req.Header.Set(api.HeaderAccept, api.HeaderAcceptProtobuf)
 
 	// copy the url (which is correct) to the RequestURI
 	// we do this because dskit/common uses the RequestURI field to translate from http.Request to httpgrpc.Request

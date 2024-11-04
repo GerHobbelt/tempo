@@ -154,7 +154,7 @@ func advancedTraceQLRunner(t *testing.T, wantTr *tempopb.Trace, wantMeta *tempop
 		fmt.Sprintf("rootName=`%s`", wantMeta.RootTraceName),
 	}
 	totalSpans := 0
-	for _, b := range wantTr.Batches {
+	for _, b := range wantTr.ResourceSpans {
 		trueResourceC, falseResourceC := conditionsForAttributes(b.Resource.Attributes, "resource")
 		falseConditions = append(falseConditions, falseResourceC...)
 
@@ -1713,6 +1713,9 @@ func runEventLinkSearchTest(t *testing.T, blockVersion string) {
 			Query: "{ event:name = `event name` }",
 		},
 		{
+			Query: "{ event:timeSinceStart > 10ms }",
+		},
+		{
 			Query: "{ link.relation = `child-of` }",
 		},
 		{
@@ -1868,7 +1871,7 @@ func makeExpectedTrace() (
 	end = 1001
 
 	tr = &tempopb.Trace{
-		Batches: []*v1.ResourceSpans{
+		ResourceSpans: []*v1.ResourceSpans{
 			{
 				Resource: &v1_resource.Resource{
 					Attributes: []*v1_common.KeyValue{
@@ -1911,7 +1914,7 @@ func makeExpectedTrace() (
 								},
 								Events: []*v1.Span_Event{
 									{
-										TimeUnixNano: uint64(1000*time.Second) + 100,
+										TimeUnixNano: uint64(1000*time.Second) + uint64(500*time.Millisecond),
 										Name:         "event name",
 										Attributes: []*v1_common.KeyValue{
 											stringKV("exception.message", "random error"),
@@ -2192,7 +2195,7 @@ func TestWALBlockGetMetrics(t *testing.T) {
 
 	// Write to wal
 	err = head.AppendTrace(common.ID{0x01}, &tempopb.Trace{
-		Batches: []*v1.ResourceSpans{
+		ResourceSpans: []*v1.ResourceSpans{
 			{
 				ScopeSpans: []*v1.ScopeSpans{
 					{

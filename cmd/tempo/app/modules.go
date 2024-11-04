@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"embed"
 	"errors"
 	"fmt"
 	"io"
@@ -333,6 +334,9 @@ func (t *App) initQuerier() (services.Service, error) {
 	tracesHandler := middleware.Wrap(http.HandlerFunc(t.querier.TraceByIDHandler))
 	t.Server.HTTPRouter().Handle(path.Join(api.PathPrefixQuerier, addHTTPAPIPrefix(&t.cfg, api.PathTraces)), tracesHandler)
 
+	tracesHandlerV2 := middleware.Wrap(http.HandlerFunc(t.querier.TraceByIDHandlerV2))
+	t.Server.HTTPRouter().Handle(path.Join(api.PathPrefixQuerier, addHTTPAPIPrefix(&t.cfg, api.PathTracesV2)), tracesHandlerV2)
+
 	searchHandler := t.HTTPAuthMiddleware.Wrap(http.HandlerFunc(t.querier.SearchHandler))
 	t.Server.HTTPRouter().Handle(path.Join(api.PathPrefixQuerier, addHTTPAPIPrefix(&t.cfg, api.PathSearch)), searchHandler)
 
@@ -394,6 +398,7 @@ func (t *App) initQueryFrontend() (services.Service, error) {
 
 	// http trace by id endpoint
 	t.Server.HTTPRouter().Handle(addHTTPAPIPrefix(&t.cfg, api.PathTraces), base.Wrap(queryFrontend.TraceByIDHandler))
+	t.Server.HTTPRouter().Handle(addHTTPAPIPrefix(&t.cfg, api.PathTracesV2), base.Wrap(queryFrontend.TraceByIDHandlerV2))
 
 	// http search endpoints
 	t.Server.HTTPRouter().Handle(addHTTPAPIPrefix(&t.cfg, api.PathSearch), base.Wrap(queryFrontend.SearchHandler))
@@ -421,6 +426,9 @@ func (t *App) initQueryFrontend() (services.Service, error) {
 	// todo: queryFrontend should implement service.Service and take the cortex frontend a submodule
 	return t.frontend, nil
 }
+
+//go:embed static
+var staticFiles embed.FS
 
 func (t *App) initCompactor() (services.Service, error) {
 	if t.cfg.Target == ScalableSingleBinary && t.cfg.Compactor.ShardingRing.KVStore.Store == "" {
@@ -484,7 +492,10 @@ func (t *App) initMemberlistKV() (services.Service, error) {
 	t.cfg.Distributor.DistributorRing.KVStore.MemberlistKV = t.MemberlistKV.GetMemberlistKV
 	t.cfg.Compactor.ShardingRing.KVStore.MemberlistKV = t.MemberlistKV.GetMemberlistKV
 
-	t.Server.HTTPRouter().Handle("/memberlist", t.MemberlistKV)
+	// Only the memberlist endpoint uses static files currently
+	t.Server.HTTPRouter().PathPrefix("/static/").HandlerFunc(http.FileServer(http.FS(staticFiles)).ServeHTTP).Methods("GET")
+
+	t.Server.HTTPRouter().Handle("/memberlist", memberlistStatusHandler("", t.MemberlistKV))
 
 	return t.MemberlistKV, nil
 }
