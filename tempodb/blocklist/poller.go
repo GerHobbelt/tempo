@@ -46,10 +46,13 @@ var (
 		Help:      "Total number of times an error occurred while polling the blocklist.",
 	}, []string{"tenant"})
 	metricBlocklistPollDuration = promauto.NewHistogram(prometheus.HistogramOpts{
-		Namespace: "tempodb",
-		Name:      "blocklist_poll_duration_seconds",
-		Help:      "Records the amount of time to poll and update the blocklist.",
-		Buckets:   prometheus.LinearBuckets(0, 60, 10),
+		Namespace:                       "tempodb",
+		Name:                            "blocklist_poll_duration_seconds",
+		Help:                            "Records the amount of time to poll and update the blocklist.",
+		Buckets:                         prometheus.DefBuckets,
+		NativeHistogramBucketFactor:     1.1,
+		NativeHistogramMaxBucketNumber:  100,
+		NativeHistogramMinResetDuration: 1 * time.Hour,
 	})
 	metricBlocklistLength = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "tempodb",
@@ -162,6 +165,9 @@ func (p *Poller) Do(previous *List) (PerTenant, PerTenantCompacted, error) {
 				level.Error(p.logger).Log("msg", "exiting polling loop early because too many errors", "errCount", consecutiveErrors)
 				return nil, nil, err
 			}
+
+			blocklist[tenantID] = previous.Metas(tenantID)
+			compactedBlocklist[tenantID] = previous.CompactedMetas(tenantID)
 			continue
 		}
 
