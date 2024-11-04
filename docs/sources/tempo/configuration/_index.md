@@ -384,6 +384,9 @@ metrics_generator:
         # A list of labels that will be added to all generated metrics.
         [external_labels: <map>]
 
+        # If set, the tenant ID will added as label with the given label name to all generated metrics.
+        [inject_tenant_id_as: <string>]
+
         # The maximum length of label names. Label names exceeding this limit will be truncated.
         [max_label_name_length: <int> | default = 1024]
 
@@ -553,6 +556,9 @@ query_frontend:
         # If set to a non-zero value, it's value will be used to decide if query is within SLO or not.
         # Query is within SLO if it returned 200 within duration_slo seconds OR processed throughput_slo bytes/s data.
         [throughput_bytes_slo: <float> | default = 0 ]
+
+        # If set to true, TraceQL metric queries will use RF1 blocks built and flushed by the metrics-generator.
+        [rf1_read_path: <bool> | default = false]
 ```
 
 ## Querier
@@ -1110,7 +1116,7 @@ storage:
 
         # block configuration
         block:
-            # block format version. options: v2, vParquet2, vParquet3
+            # block format version. options: v2, vParquet2, vParquet3, vParquet4
             [version: <string> | default = vParquet3]
 
             # bloom filter false positive rate. lower values create larger filters but fewer false positives
