@@ -22,13 +22,13 @@ These functions can be added as an operator at the end of any TraceQL query.
 : Calculates the number of matching spans per second
 
 `count_over_time`
-: Counts the number of matching spans per time interval (refer to the [`step` API parameter](https://grafana.com/docs/tempo/<TEMPO_VERSION>/api_docs/#traceql-metrics)).
+: Counts the number of matching spans per time interval (refer to the [`step` API parameter](https://grafana.com/docs/tempo/<TEMPO_VERSION>/api_docs)).
 
 `min_over_time`
-: Returns the minimum value of matching spans values per time interval (see the `step` API parameter)
+: Returns the minimum value for the specified attribute across all matching spans per time interval (refer to the [`step` API parameter](https://grafana.com/docs/tempo/<TEMPO_VERSION>/api_docs/#traceql-metrics)).
 
 `max_over_time`
-: Returns the minimum value for the specified attribute across all matching spans per time interval (refer to the [`step` API parameter](https://grafana.com/docs/tempo/<TEMPO_VERSION>/api_docs/#traceql-metrics)).
+: Returns the maximum value for the specified attribute across all matching spans per time interval (refer to the [`step` API parameter](https://grafana.com/docs/tempo/<TEMPO_VERSION>/api_docs/#traceql-metrics)).
 
 `avg_over_time`
 : Returns the average value for the specified attribute across all matching spans per time interval (refer to the [`step` API parameter](https://grafana.com/docs/tempo/<TEMPO_VERSION>/api_docs/#traceql-metrics)).
@@ -87,7 +87,6 @@ The `count_over_time()` function counts the number of matching spans per time in
 The time interval that the count will be computed over is set by the `step` parameter.
 For more information, refer to the [`step` API parameter](https://grafana.com/docs/tempo/<TEMPO_VERSION>/api_docs/#traceql-metrics).
 
-
 ### Example
 
 This example counts the number of spans with name `"GET /:endpoint"` broken down by status code. You might see that there are 10 `"GET /:endpoint"` spans with status code 200 and 15 `"GET /:endpoint"` spans with status code 400.
@@ -104,7 +103,7 @@ For example, you could choose to calculate the minimum duration of a group of sp
 The time interval that the minimum is computed over is set by the `step` parameter.
 
 The `max_over_time()` let you aggregate numerical values by computing the maximum value of them, such as the all important span duration.
-The time interval that the maximum is computer over is set by the `step` parameter.
+The time interval that the maximum is computed over is set by the `step` parameter.
 
 The `avg_over_time()` function lets you aggregate numerical values by computing the maximum value of them, such as the all important span duration.
 The time interval that the maximum is computer over is set by the `step` parameter.
@@ -186,7 +185,7 @@ You could use a similar query to know what the 50th percentile and 95th percenti
 The `compare` function is used to split a set of spans into two groups: a selection and a baseline.
 It returns time-series for all attributes found on the spans to highlight the differences between the two groups.
 
-This is a powerful function that's best understood by using the [**Comparison** tab in Explore Traces](https://grafana.com/docs/grafana/<GRAFNA_VERSION>/explore/simplified-exploration/traces/investigate/#comparison).
+This is a powerful function that's best understood by using the [**Comparison** tab in Explore Traces](https://grafana.com/docs/grafana/<GRAFANA_VERSION>/explore/simplified-exploration/traces/investigate/#comparison).
 You can also under this function by looking at example outputs below.
 
 The function is used like other metrics functions: when it's placed after any trace query, it converts the query into a metrics query:

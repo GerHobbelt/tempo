@@ -51,8 +51,9 @@ The backend can be configured in a few ways:
     * `--backend <value>` The storage backend type, one of `s3`, `gcs`, `azure`, and `local`.
     * `--bucket <value>` The bucket name. The meaning of this value is backend-specific. Refer to [Configuration]({{< relref "../configuration" >}}) documentation for more information.
     * `--s3-endpoint <value>` The S3 API endpoint (i.e. s3.dualstack.us-east-2.amazonaws.com).
-    * `--s3-user <value>`, `--s3-password <value>` The S3 user name and password (or access key and secret key).
+    * `--s3-user <value>`, `--s3-pass <value>` The S3 user name and password (or access key and secret key).
       Optional, as Tempo CLI supports the same authentication mechanisms as Tempo. See [S3 permissions documentation]({{< relref "../configuration/hosted-storage/s3" >}}) for more information.
+    *  `--insecure-skip-verify` skip TLS verification, only applies to S3 and GCS.
 
 Each option applies only to the command in which it is used. For example, `--backend <value>` does not permanently change where Tempo stores data. It only changes it for command in which you apply the option.
 
@@ -506,20 +507,27 @@ Options:
 tempo-cli analyse blocks --backend=local --bucket=./cmd/tempo-cli/test-data/ single-tenant
 ```
 
-## Drop trace by id
+## Drop traces by ID
 
-Rewrites all blocks for a tenant that contain a specific trace id. The trace is dropped from
+Rewrites all blocks for a tenant that contain a specific trace IDs. The traces are dropped from
 the new blocks and the rewritten blocks are marked compacted so they will be cleaned up.
 
 Arguments:
 - `tenant-id` The tenant ID. Use `single-tenant` for single tenant setups.
-- `trace-id` The trace id to drop
+- `trace-ids` The comma-separated trace IDs to drop (also supports single trace ID)
 
 Options:
 - [Backend options](#backend-options)
-- `--drop-traces` By default this command runs in dry run mode. Supplying this argument causes it to actually rewrite blocks with the trace dropped.
+- `--drop-traces` By default, this command runs in dry run mode. Supplying this argument causes it to actually rewrite blocks with the traces dropped.
 
-**Example:**
+### Examples
+
+Drop one trace:
 ```bash
-tempo-cli rewrite-blocks drop-trace --backend=local --bucket=./cmd/tempo-cli/test-data/ single-tenant a188ea38aa3a83d74523774ad6728cc8
+tempo-cli rewrite-blocks drop-trace --backend=local --bucket=./cmd/tempo-cli/test-data/ single-tenant 04d5f549746c96e4f3daed6202571db2
+```
+
+Drop multiple traces:
+```bash
+tempo-cli rewrite-blocks drop-trace --backend=local --bucket=./cmd/tempo-cli/test-data/ single-tenant 04d5f549746c96e4f3daed6202571db2,111fa1850042aea83c17cd7e674210b8
 ```

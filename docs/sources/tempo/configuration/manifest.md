@@ -18,7 +18,7 @@ go run ./cmd/tempo --storage.trace.backend=local --storage.trace.local.path=/var
 ## Complete configuration
 
 {{< admonition type="note" >}}
-This manifest was generated on 2024-10-21.
+This manifest was generated on 2024-11-28.
 {{% /admonition %}}
 
 ```yaml
@@ -188,7 +188,6 @@ distributor:
     forwarders: []
     usage:
         cost_attribution:
-            enabled: false
             max_cardinality: 10000
             stale_duration: 15m0s
     extend_writes: true
@@ -316,7 +315,8 @@ query_frontend:
         max_duration: 168h0m0s
         query_backend_after: 15m0s
         query_ingesters_until: 30m0s
-        ingester_shards: 1
+        ingester_shards: 3
+        max_spans_per_span_set: 100
     trace_by_id:
         query_shards: 50
     metrics:
@@ -328,6 +328,12 @@ query_frontend:
         max_exemplars: 100
     multi_tenant_queries_enabled: true
     response_consumers: 10
+    weights:
+        request_with_weights: true
+        retry_with_weights: true
+        max_traceql_conditions: 4
+        max_regex_conditions: 1
+    max_query_expression_size_bytes: 131072
 compactor:
     ring:
         kvstore:
@@ -713,7 +719,7 @@ overrides:
             burst_size_bytes: 20000000
             max_traces_per_user: 10000
         read:
-            max_bytes_per_tag_values_query: 5000000
+            max_bytes_per_tag_values_query: 1000000
         metrics_generator:
             generate_native_histograms: classic
             ingestion_time_range_slack: 0s
@@ -794,6 +800,7 @@ memberlist:
     gossip_to_dead_nodes_time: 30s
     dead_node_reclaim_time: 0s
     compression_enabled: false
+    notify_interval: 0s
     advertise_addr: ""
     advertise_port: 7946
     cluster_label: ""
@@ -812,6 +819,8 @@ memberlist:
     bind_port: 7946
     packet_dial_timeout: 2s
     packet_write_timeout: 5s
+    max_concurrent_writes: 3
+    acquire_writer_timeout: 250ms
     tls_enabled: false
     tls_cert_path: ""
     tls_key_path: ""

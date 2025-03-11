@@ -106,26 +106,26 @@ Attributes example:
 
 The following table shows the current available scoped intrinsic fields:
 
-| **Field**                | **Type**    | **Definition**                                                  | **Example**                            |
-| ------------------------ | ----------- | --------------------------------------------------------------- | -------------------------------------- |
-| `span:status`            | status enum | status: error, ok, or unset                                     | `{ span:status = ok }`                 |
-| `span:statusMessage`     | string      | optional text accompanying the span status                      | `{ span:statusMessage = "Forbidden" }` |
-| `span:duration`          | duration    | end - start time of the span                                    | `{ span:duration > 100ms }`            |
-| `span:name`              | string      | operation or span name                                          | `{ span:name = "HTTP POST" }`          |
-| `span:kind`              | kind enum   | kind: server, client, producer, consumer, internal, unspecified | `{ span:kind = server }`               |
-| `span:id`                | string      | span id using hex string                                        | `{ span:id = "0000000000000001" }`     |
-| `trace:duration`         | duration    | max(end) - min(start) time of the spans in the trace            | `{ trace:duration > 100ms }`           |
-| `trace:rootName`         | string      | if it exists the name of the root span in the trace             | `{ trace:rootName = "HTTP GET" }`      |
-| `trace:rootService`      | string      | if it exists the service name of the root span in the trace     | `{ trace:rootServiceName = "gateway" }`|
-| `trace:id`               | string      | trace id using hex string                                       | `{ trace:id = "1234567890abcde" }`     |
-| `event:name`             | string      | name of event                                                   | `{ event:name = "exception" }`         |
-| `event:timeSinceStart`   | duration    | time of event in relation to the span start time                | `{ event:timeSinceStart > 2ms}`        |
-| `link:spanID`            | string      | link span id using hex string                                   | `{ link:spanID = "0000000000000001" }` |
-| `link:traceID`           | string      | link trace id using hex string                                  | `{ link:traceID = "1234567890abcde" }` |
+| **Field**                | **Type**    | **Definition**                                                  | **Example**                             |
+| ------------------------ | ----------- | --------------------------------------------------------------- | --------------------------------------- |
+| `span:status`            | status enum | status: error, ok, or unset                                     | `{ span:status = ok }`                  |
+| `span:statusMessage`     | string      | optional text accompanying the span status                      | `{ span:statusMessage = "Forbidden" }`  |
+| `span:duration`          | duration    | end - start time of the span                                    | `{ span:duration > 100ms }`             |
+| `span:name`              | string      | operation or span name                                          | `{ span:name = "HTTP POST" }`           |
+| `span:kind`              | kind enum   | kind: server, client, producer, consumer, internal, unspecified | `{ span:kind = server }`                |
+| `span:id`                | string      | span id using hex string                                        | `{ span:id = "0000000000000001" }`      |
+| `trace:duration`         | duration    | max(end) - min(start) time of the spans in the trace            | `{ trace:duration > 100ms }`            |
+| `trace:rootName`         | string      | if it exists, the name of the root span in the trace            | `{ trace:rootName = "HTTP GET" }`       |
+| `trace:rootService`      | string      | if it exists, the service name of the root span in the trace    | `{ trace:rootService = "gateway" }`     |
+| `trace:id`               | string      | trace id using hex string                                       | `{ trace:id = "1234567890abcde" }`      |
+| `event:name`             | string      | name of event                                                   | `{ event:name = "exception" }`          |
+| `event:timeSinceStart`   | duration    | time of event in relation to the span start time                | `{ event:timeSinceStart > 2ms}`         |
+| `link:spanID`            | string      | link span id using hex string                                   | `{ link:spanID = "0000000000000001" }`  |
+| `link:traceID`           | string      | link trace id using hex string                                  | `{ link:traceID = "1234567890abcde" }`  |
 
 <!-- instrumentation scope isn't included in the 2.6 documentation
-| `instrumentation:name`   | string      | instrumentation scope name                                      | `{ instrumentation:name = "grpc" }`    |
-| `instrumentation:version`| string      | instrumentation scope version                                   | `{ instrumentation:version = "1.0.0" }`|
+| `instrumentation:name`   | string      | instrumentation scope name                                      | `{ instrumentation:name = "grpc" }`     |
+| `instrumentation:version`| string      | instrumentation scope version                                   | `{ instrumentation:version = "1.0.0" }` |
 -->
 
 The trace-level intrinsics, `trace:duration`, `trace:rootName`, and `trace:rootService`, are the same for all spans in the same trace.
@@ -254,7 +254,8 @@ The implemented comparison operators are:
 - `=~` (regular expression)
 - `!~` (negated regular expression)
 
-TraceQL uses Golang regular expressions. Online regular expression testing sites like https://regex101.com/ are convenient to validate regular expressions used in TraceQL queries.
+TraceQL uses Golang regular expressions. Online regular expression testing sites like https://regex101.com/ are convenient to validate regular expressions used in TraceQL queries. All regular expressions
+are treated as fully anchored. For example, `span.foo =~ "bar"` is evaluated as `span.foo =~ "^bar$"`.
 
 For example, to find all traces where an `http.status_code` attribute in a span are greater than `400` but less than equal to `500`:
 
@@ -346,7 +347,7 @@ For example, to find a trace where a specific HTTP API interacted with a specifi
 ### Union structural
 
 These spanset operators look at the structure of a trace and the relationship between the spans. These operators are unique in that they
-return spans that match on both side of the operator.
+return spans that match on both sides of the operator.
 
 - `{condA} &>> {condB}` - The descendant operator (`>>`) looks for spans matching `{condB}` that are descendants of a span matching `{condA}`.
 - `{condA} &<< {condB}` - The ancestor operator (`<<`) looks for spans matching `{condB}` that are ancestor of a span matching `{condA}`.

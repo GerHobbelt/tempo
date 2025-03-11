@@ -593,6 +593,10 @@ query_frontend:
     # A list of regular expressions for refusing matching requests, these will apply for every request regardless of the endpoint.
     [url_deny_list: <list of strings> | default = <empty list>]]
 
+    # Max allowed TraceQL expression size, in bytes. queries bigger then this size will be rejected.
+    # (default: 128 KiB)
+    [max_query_expression_size_bytes: <int> | default = 131072]]
+
     search:
         # Maximum number of outstanding requests per tenant per frontend; requests beyond this error with HTTP 429.
         # (default: 2000)
@@ -642,8 +646,11 @@ query_frontend:
         [throughput_bytes_slo: <float> | default = 0 ]
 
         # The number of shards to break ingester queries into.
-        [ingester_shards]: <int> | default = 1]
-        
+        [ingester_shards]: <int> | default = 3]
+
+        # The maximum allowed value of spans per span set. 0 disables this limit.
+        [max_spans_per_span_set]: <int> | default = 100]
+
         # SLO configuration for Metadata (tags and tag values) endpoints.
         metadata_slo:
             # If set to a non-zero value, it's value will be used to decide if metadata query is within SLO or not.
@@ -742,6 +749,7 @@ querier:
         # Timeout for search requests
         [query_timeout: <duration> | default = 30s]
 
+        # NOTE: The Tempo serverless feature is now deprecated and will be removed in an upcoming release.
         # A list of external endpoints that the querier will use to offload backend search requests. They must
         # take and return the same value as /api/search endpoint on the querier. This is intended to be
         # used with serverless technologies for massive parallelization of the search path.
@@ -1573,7 +1581,7 @@ overrides:
       # tags with high cardinality or large values such as HTTP URLs or SQL queries.
       # This override limit is used by the ingester and the querier.
       # A value of 0 disables the limit.
-      [max_bytes_per_tag_values_query: <int> | default = 5000000 (5MB) ]
+      [max_bytes_per_tag_values_query: <int> | default = 1000000 (1MB) ]
 
       # Maximum number of blocks to be inspected for a tag values query. Tag-values
       # query is used mainly to populate the autocomplete dropdown. This limit
