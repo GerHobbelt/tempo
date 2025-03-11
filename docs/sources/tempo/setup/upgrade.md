@@ -96,24 +96,29 @@ The `use_otel_tracer` option is removed.
 Configure your spans via standard OpenTelemetry environment variables.
 For Jaeger exporting, set `OTEL_TRACES_EXPORTER=jaeger`.For more information, refer to the [OpenTelemetry documentation](https://www.google.com/url?q=https://opentelemetry.io/docs/languages/sdk-configuration/&sa=D&source=docs&ust=1736460391410238&usg=AOvVaw3bykVWwn34XfhrnFK73uM_). ([#3646](https://github.com/grafana/tempo/pull/3646))
 
-### gRPC compression disabled
+### gRPC compression set to snappy
 
-Disable gRPC compression in the querier and distributor for performance reasons. ([#4429](https://github.com/grafana/tempo/pull/4429)) Check the gRPC compression settings if you see network issues.
-If you would like to re-enable it, we recommend 'snappy'.
-Use the following settings:
+Tempo 2.7.1 set gRPC compression between all components to be `snappy`.
+Using `snappy` provides a balanced approach to compression between components that will work for most installations.
 
-  ```
-  ingester_client:
-      grpc_client_config:
-          grpc_compression: "snappy"
-  metrics_generator_client:
-      grpc_client_config:
-          grpc_compression: "snappy"
-  querier:
-      frontend_worker:
-          grpc_client_config:
-              grpc_compression: "snappy"
-  ```
+If you prefer a different balance of CPU/Memory and bandwidth, consider disabling compression or using zstd.
+
+For a discussion on alternatives, refer to [this discussion thread](https://github.com/grafana/tempo/discussions/4683). ([#4696](https://github.com/grafana/tempo/pull/4696)).
+
+#### gRPC compression disabled
+
+Tempo 2.7.0 release disabled gRPC compression in the querier and distributor for performance reasons. ([#4429](https://github.com/grafana/tempo/pull/4429)).
+Our benchmark suggests that without compression, queriers and distributors use less CPU and memory.
+
+Tempo 2.7.1 changed the default value to `snappy` for internal components.
+
+{{< admonition type="note" >}}
+This change may increase data usage and network traffic, which can impact cloud billing.
+{{< /admonition >}}
+
+If you notice increased network traffic or issues, check the gRPC compression settings.
+
+For instructions how to enable gRPC compression, refer to [gRPC compression configuration](https://grafana.com/docs/tempo/<TEMPO_VERSION>/configuration/#grpc-compression) for more information.
 
 ### Added, updated, removed, or renamed configuration parameters
 
@@ -205,7 +210,7 @@ metrics_generator:
 
 **For historical data**
 
-To run metrics queries on historical data, you must configure the local-blocks processor to flush rf1 blocks to object storage:
+To run metrics queries on historical data, you must configure the local-blocks processor to flush RF1 blocks to object storage:
 
 ```yaml
 metrics_generator:

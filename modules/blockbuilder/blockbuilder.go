@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-kit/log"
@@ -101,7 +102,11 @@ func New(
 	partitionRing ring.PartitionRingReader,
 	overrides Overrides,
 	store storage.Store,
-) *BlockBuilder {
+) (*BlockBuilder, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
 	b := &BlockBuilder{
 		logger:        logger,
 		cfg:           cfg,
@@ -112,7 +117,7 @@ func New(
 	}
 
 	b.Service = services.NewBasicService(b.starting, b.running, b.stopping)
-	return b
+	return b, nil
 }
 
 func (b *BlockBuilder) starting(ctx context.Context) (err error) {
@@ -194,8 +199,7 @@ func (b *BlockBuilder) consume(ctx context.Context) error {
 		end        = time.Now()
 		partitions = b.getAssignedActivePartitions()
 	)
-
-	level.Info(b.logger).Log("msg", "starting consume cycle", "cycle_end", end, "active_partitions", partitions)
+	level.Info(b.logger).Log("msg", "starting consume cycle", "cycle_end", end, "active_partitions", getActivePartitions(partitions))
 	defer func(t time.Time) { metricConsumeCycleDuration.Observe(time.Since(t).Seconds()) }(time.Now())
 
 	// Clear all previous remnants
@@ -222,6 +226,14 @@ func (b *BlockBuilder) consume(ctx context.Context) error {
 	return nil
 }
 
+func getActivePartitions(partitions []int32) string {
+	var strArr []string
+	for _, v := range partitions {
+		strArr = append(strArr, strconv.Itoa(int(v)))
+	}
+	return strings.Join(strArr, ",")
+}
+
 func (b *BlockBuilder) consumePartition(ctx context.Context, partition int32, overallEnd time.Time) (more bool, err error) {
 	defer func(t time.Time) {
 		metricProcessPartitionSectionDuration.WithLabelValues(strconv.Itoa(int(partition))).Observe(time.Since(t).Seconds())
@@ -236,7 +248,6 @@ func (b *BlockBuilder) consumePartition(ctx context.Context, partition int32, ov
 		init        bool
 		writer      *writer
 		lastRec     *kgo.Record
-		nextCut     time.Time
 		end         time.Time
 	)
 
@@ -321,8 +332,7 @@ outer:
 			if !init {
 				end = rec.Timestamp.Add(dur) // When block will be cut
 				metricPartitionLagSeconds.WithLabelValues(partLabel).Set(time.Since(rec.Timestamp).Seconds())
-				writer = newPartitionSectionWriter(b.logger, uint64(partition), uint64(rec.Offset), b.cfg.BlockConfig, b.overrides, b.wal, b.enc)
-				nextCut = rec.Timestamp.Add(cutTime)
+				writer = newPartitionSectionWriter(b.logger, uint64(partition), uint64(rec.Offset), rec.Timestamp, dur, b.cfg.WAL.IngestionSlack, b.cfg.BlockConfig, b.overrides, b.wal, b.enc)
 				init = true
 			}
 
@@ -336,15 +346,6 @@ outer:
 
 			if rec.Timestamp.After(overallEnd) {
 				break outer
-			}
-
-			if rec.Timestamp.After(nextCut) {
-				// Cut before appending this trace
-				err = writer.cutidle(rec.Timestamp.Add(-cutTime), false)
-				if err != nil {
-					return false, err
-				}
-				nextCut = rec.Timestamp.Add(cutTime)
 			}
 
 			err := b.pushTraces(rec.Timestamp, rec.Key, rec.Value, writer)
@@ -368,12 +369,6 @@ outer:
 			"partition", partition,
 		)
 		return false, nil
-	}
-
-	// Cut any remaining
-	err = writer.cutidle(time.Time{}, true)
-	if err != nil {
-		return false, err
 	}
 
 	err = writer.flush(ctx, b.writer)

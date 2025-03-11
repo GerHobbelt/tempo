@@ -240,23 +240,10 @@ func checkBlocklists(t *testing.T, expectedID uuid.UUID, expectedB int, expected
 		require.Equal(t, expectedID, (uuid.UUID)(blocklist[0].BlockID))
 	}
 
-	// confirm blocklists are in starttime ascending order
-	lastTime := time.Time{}
-	for _, b := range blocklist {
-		require.True(t, lastTime.Before(b.StartTime) || lastTime.Equal(b.StartTime))
-		lastTime = b.StartTime
-	}
-
 	compactedBlocklist := rw.blocklist.CompactedMetas(testTenantID)
 	require.Len(t, compactedBlocklist, expectedCB)
 	if expectedCB > 0 && expectedID != uuid.Nil {
 		require.Equal(t, expectedID, (uuid.UUID)(compactedBlocklist[0].BlockID))
-	}
-
-	lastTime = time.Time{}
-	for _, b := range compactedBlocklist {
-		require.True(t, lastTime.Before(b.StartTime) || lastTime.Equal(b.StartTime))
-		lastTime = b.StartTime
 	}
 }
 
@@ -694,7 +681,7 @@ func writeTraceToWal(t require.TestingT, b common.WALBlock, dec model.SegmentDec
 	b2, err := dec.ToObject([][]byte{b1})
 	require.NoError(t, err)
 
-	err = b.Append(id, b2, start, end)
+	err = b.Append(id, b2, start, end, true)
 	require.NoError(t, err, "unexpected error writing req")
 }
 

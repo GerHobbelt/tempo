@@ -128,6 +128,23 @@ It's a convenient request to identify misconfigurations and leaks across product
 { resource.deployment.environment = "production" } && { resource.deployment.environment = "staging" }
 ```
 
+### Find traces with arrays
+
+TraceQL automatically queries data contained in arrays.
+Support for arrays is available in vParquet4 and on.
+
+If `span.foo` is an array and contains the value `bar`, then it will be found by this query.
+
+```
+{ span.foo = "bar" }
+```
+
+You can use regular expressions to match multiple values of array `{span.http.request.header.Accept=~"application.*"}` and get all values of the array with `.*` regular expression.
+
+```
+{span.http.request.header.Accept=~".*"}
+```
+
 ### Use structural operators
 
 Find traces that include the `frontend` service, where either that service or a downstream service includes a span where an error is set.
@@ -579,6 +596,15 @@ or anything else that comes to mind.
 TraceQL can select arbitrary fields from spans. This is particularly performant because the selected fields are not retrieved until all other criteria is met.
 ```
 { status=error } | select(span.http.status_code, span.http.url)
+```
+
+## Retrieving most recent results (experimental)
+
+The TraceQL query hint `most_recent=true` can be used with any TraceQL selection query to force Tempo to return the most recent results ordered by time. Examples:
+
+```
+{} with (most_recent=true)
+{ span.foo = "bar" } >> { status = error } with (most_recent=true)
 ```
 
 ## Experimental TraceQL metrics

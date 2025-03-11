@@ -20,6 +20,7 @@ The Tempo configuration options include:
   - [Server](#server)
   - [Distributor](#distributor)
     - [Set max attribute size to help control out of memory errors](#set-max-attribute-size-to-help-control-out-of-memory-errors)
+    - [gRPC compression](#grpc-compression)
   - [Ingester](#ingester)
   - [Metrics-generator](#metrics-generator)
   - [Query-frontend](#query-frontend)
@@ -236,7 +237,7 @@ distributor:
     # Optional
     # Configures the max size an attribute can be. Any key or value that exceeds this limit will be truncated before storing
     # Setting this parameter to '0' would disable this check against attribute size
-    [max_span_attr_byte: <int> | default = '2048']
+    [max_attribute_bytes: <int> | default = '2048']
 
     # Optional.
     # Configures usage trackers in the distributor which expose metrics of ingested traffic grouped by configurable
@@ -259,13 +260,48 @@ This issue has been observed when trying to fetch a single trace using the [`tra
 While a trace might not have a lot of spans (roughly 500), it can have a larger size (approximately 250KB).
 Some of the spans in that trace had attributes whose values were very large in size.
 
-To avoid these out-of-memory crashes, use `max_span_attr_byte` to limit the maximum allowable size of any individual attribute.
+To avoid these out-of-memory crashes, use `max_attribute_bytes` to limit the maximum allowable size of any individual attribute.
 Any key or values that exceed the configured limit are truncated before storing.
 The default value is `2048`.
 
 Use the `tempo_distributor_attributes_truncated_total` metric to track how many attributes are truncated.
 
 For additional information, refer to [Troubleshoot out-of-memory errors](https://grafana.com/docs/tempo/<TEMPO_VERSION>/troubleshooting/out-of-memory-errors/).
+
+### gRPC compression
+
+Starting with Tempo 2.7.1, gRPC compression between all components defaults to `snappy`.
+Using `snappy` provides a balanced approach to compression between components that will work for most installations.
+
+If you prefer a different balance of CPU/Memory and bandwidth, consider disabling compression or using `zstd`.
+
+For a discussion on alternatives, refer to [this discussion thread](https://github.com/grafana/tempo/discussions/4683). ([#4696](https://github.com/grafana/tempo/pull/4696)).
+
+
+Disabling comrpession may provide some performance boosts.
+Benchmark testing suggested that without compression, queriers and distributors used less CPU and memory.
+
+However, you may notice an increase in ingester data and network traffic especially for larger clusters.
+This increased data can impact billing for Grafana Cloud.
+
+You can configure the gRPC compression in the `querier`, `ingester`, and `metrics_generator` clients of the distributor.
+
+To disable compression, remove `snappy` from the `grpc_compression` lines.
+
+To re-enable the compression, use `snappy` with the following settings:
+
+  ```yaml
+  ingester_client:
+      grpc_client_config:
+          grpc_compression: "snappy"
+  metrics_generator_client:
+      grpc_client_config:
+          grpc_compression: "snappy"
+  querier:
+      frontend_worker:
+          grpc_client_config:
+              grpc_compression: "snappy"
+```
 
 ## Ingester
 
@@ -494,7 +530,11 @@ metrics_generator:
             # If enabled, only parent spans or spans with the SpanKind of `server` will be retained
             [filter_server_spans: <bool> | default = true]
 
-            # Number of blocks that are allowed to be processed concurently
+            # Whether server spans should be flushed to storage.
+            # Setting `flush_to_storage` to `true` ensures that metrics blocks are flushed to storage so TraceQL metrics queries against historical data.
+            [flush_to_storage: <bool> | default = false]
+
+            # Number of blocks that are allowed to be processed concurrently.
             [concurrent_blocks: <uint> | default = 10]
 
             # A tuning factor that controls whether the trace-level timestamp columns are used in a metrics query.
@@ -669,11 +709,15 @@ query_frontend:
         # Query is within SLO if it returned 200 within duration_slo seconds OR processed throughput_slo bytes/s data.
         [throughput_bytes_slo: <float> | default = 0 ]
 
+        # The number of time windows to break a search up into when doing a most recent TraceQL search. This only impacts TraceQL
+        # searches with (most_recent=true)
+        [most_recent_shards: <int> | default = 200]
+
         # The number of shards to break ingester queries into.
-        [ingester_shards]: <int> | default = 3]
+        [ingester_shards: <int> | default = 3]
 
         # The maximum allowed value of spans per span set. 0 disables this limit.
-        [max_spans_per_span_set]: <int> | default = 100]
+        [max_spans_per_span_set: <int> | default = 100]
 
         # SLO configuration for Metadata (tags and tag values) endpoints.
         metadata_slo:
@@ -681,6 +725,7 @@ query_frontend:
             # Query is within SLO if it returned 200 within duration_slo seconds OR processed throughput_slo bytes/s data.
             # NOTE: Requires `duration_slo` AND `throughput_bytes_slo` to be configured.
             [duration_slo: <duration> | default = 0s ]
+
 
             # If set to a non-zero value, it's value will be used to decide if metadata query is within SLO or not.
             # Query is within SLO if it returned 200 within duration_slo seconds OR processed throughput_slo bytes/s data.
@@ -1077,6 +1122,22 @@ storage:
             # A map of key value strings for user tags to store on the S3 objects. This helps set up filters in S3 lifecycles.
             # See the [S3 documentation on object tagging](https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-tagging.html) for more detail.
             [tags: <map[string]string>]
+
+
+            [sse: <map[string]string>]:
+              # Optional
+              # Example: type: SSE-S3
+              # Type of encryption to use with s3 bucket, either SSE-KMS or SSE-S3
+              [type: string]:
+
+              # Optional
+              # Example: kms_key_id: "1234abcd-12ab-34cd-56ef-1234567890ab"
+              # the kms key id is the identification of the key in an account or region
+              kms_key_id:
+              # Optional
+              # Example: kms_encryption_context: "encryptionContext": {"department": "10103.0"}
+              # KMS Encryption Context used for object encryption. It expects JSON formatted string
+              kms_encryption_context:
 
         # azure configuration. Will be used only if value of backend is "azure"
         # EXPERIMENTAL
@@ -1593,6 +1654,13 @@ overrides:
       # Should not be lower than RF.
       [tenant_shard_size: <int> | default = 0]
 
+      # Maximum bytes any attribute can be for both keys and values.
+      [max_attribute_bytes: <int> | default = 0]
+      
+      # Pad push requests with an artificial delay, if set push requests will be delayed to ensure
+      # an average latency of at least artificial_delay.
+      [artificial_delay: <duration> | default = 0ms]
+
     # Read related overrides
     read:
       # Maximum size in bytes of a tag-values query. Tag-values query is used mainly
@@ -1982,7 +2050,7 @@ cache:
             # Optional
             # Comma separated addresses list in DNS Service Discovery format. Refer - https://cortexmetrics.io/docs/configuration/arguments/#dns-service-discovery.
             # (default: "")
-            # Example: "addresses: memcached"
+            # Example: "addresses: dns+memcached:11211"
             [addresses: <comma separated strings>]
 
             # Optional
