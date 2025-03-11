@@ -8,8 +8,7 @@ import (
 	"github.com/grafana/dskit/flagext"
 	"github.com/grafana/dskit/kv/memberlist"
 	"github.com/grafana/dskit/server"
-	"github.com/prometheus/client_golang/prometheus"
-
+	"github.com/grafana/tempo/modules/blockbuilder"
 	"github.com/grafana/tempo/modules/cache"
 	"github.com/grafana/tempo/modules/compactor"
 	"github.com/grafana/tempo/modules/distributor"
@@ -21,6 +20,7 @@ import (
 	"github.com/grafana/tempo/modules/overrides"
 	"github.com/grafana/tempo/modules/querier"
 	"github.com/grafana/tempo/modules/storage"
+	"github.com/grafana/tempo/pkg/ingest"
 	internalserver "github.com/grafana/tempo/pkg/server"
 	"github.com/grafana/tempo/pkg/usagestats"
 	"github.com/grafana/tempo/pkg/util"
@@ -49,6 +49,8 @@ type Config struct {
 	Compactor       compactor.Config        `yaml:"compactor,omitempty"`
 	Ingester        ingester.Config         `yaml:"ingester,omitempty"`
 	Generator       generator.Config        `yaml:"metrics_generator,omitempty"`
+	Ingest          ingest.Config           `yaml:"ingest,omitempty"`
+	BlockBuilder    blockbuilder.Config     `yaml:"block_builder,omitempty"`
 	StorageConfig   storage.Config          `yaml:"storage,omitempty"`
 	Overrides       overrides.Config        `yaml:"overrides,omitempty"`
 	MemberlistKV    memberlist.KVConfig     `yaml:"memberlist,omitempty"`
@@ -124,6 +126,8 @@ func (c *Config) RegisterFlagsAndApplyDefaults(prefix string, f *flag.FlagSet) {
 	c.Distributor.RegisterFlagsAndApplyDefaults(util.PrefixConfig(prefix, "distributor"), f)
 	c.Ingester.RegisterFlagsAndApplyDefaults(util.PrefixConfig(prefix, "ingester"), f)
 	c.Generator.RegisterFlagsAndApplyDefaults(util.PrefixConfig(prefix, "generator"), f)
+	c.Ingest.RegisterFlagsAndApplyDefaults(util.PrefixConfig(prefix, "ingest"), f)
+	c.BlockBuilder.RegisterFlagsAndApplyDefaults(util.PrefixConfig(prefix, "block-builder"), f)
 	c.Querier.RegisterFlagsAndApplyDefaults(util.PrefixConfig(prefix, "querier"), f)
 	c.Frontend.RegisterFlagsAndApplyDefaults(util.PrefixConfig(prefix, "frontend"), f)
 	c.Compactor.RegisterFlagsAndApplyDefaults(util.PrefixConfig(prefix, "compactor"), f)
@@ -223,25 +227,11 @@ func (c *Config) CheckConfig() []ConfigWarning {
 		warnings = append(warnings, warnTraceByIDConcurrentShards)
 	}
 
+	if c.BlockBuilder.BlockConfig.BlockCfg.Version != c.BlockBuilder.WAL.Version {
+		warnings = append(warnings, warnBlockAndWALVersionMismatch)
+	}
+
 	return warnings
-}
-
-func (c *Config) Describe(ch chan<- *prometheus.Desc) {
-	ch <- metricConfigFeatDesc
-}
-
-func (c *Config) Collect(ch chan<- prometheus.Metric) {
-	features := map[string]int{
-		"search_external_endpoints": 0,
-	}
-
-	if len(c.Querier.Search.ExternalEndpoints) > 0 {
-		features["search_external_endpoints"] = 1
-	}
-
-	for label, value := range features {
-		ch <- prometheus.MustNewConstMetric(metricConfigFeatDesc, prometheus.GaugeValue, float64(value), label)
-	}
 }
 
 // ConfigWarning bundles message and explanation strings in one structure.
@@ -301,6 +291,11 @@ var (
 	warnTraceByIDConcurrentShards = ConfigWarning{
 		Message: "c.Frontend.TraceByID.ConcurrentShards greater than query_shards is invalid. concurrent_shards will be set to query_shards",
 		Explain: "Please remove ConcurrentShards or set it to a value less than or equal to QueryShards",
+	}
+
+	warnBlockAndWALVersionMismatch = ConfigWarning{
+		Message: "c.BlockConfig.BlockCfg.Version != c.WAL.Version",
+		Explain: "Block version and WAL version must match. WAL version will be set to block version",
 	}
 )
 

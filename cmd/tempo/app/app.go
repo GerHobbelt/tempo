@@ -21,8 +21,8 @@ import (
 	"github.com/grafana/dskit/server"
 	"github.com/grafana/dskit/services"
 	"github.com/grafana/dskit/signals"
+	"github.com/grafana/tempo/modules/blockbuilder"
 	"github.com/jedib0t/go-pretty/v6/table"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/version"
 	"go.uber.org/atomic"
 	"google.golang.org/grpc"
@@ -53,13 +53,6 @@ const (
 )
 
 var (
-	metricConfigFeatDesc = prometheus.NewDesc(
-		"tempo_feature_enabled",
-		"Boolean for configuration variables",
-		[]string{"feature"},
-		nil,
-	)
-
 	statFeatureEnabledAuth         = usagestats.NewInt("feature_enabled_auth_stats")
 	statFeatureEnabledMultitenancy = usagestats.NewInt("feature_enabled_multitenancy")
 )
@@ -71,18 +64,21 @@ type App struct {
 	Server         TempoServer
 	InternalServer *server.Server
 
-	readRings     map[string]*ring.Ring
-	Overrides     overrides.Service
-	distributor   *distributor.Distributor
-	querier       *querier.Querier
-	frontend      *frontend_v1.Frontend
-	compactor     *compactor.Compactor
-	ingester      *ingester.Ingester
-	generator     *generator.Generator
-	store         storage.Store
-	usageReport   *usagestats.Reporter
-	cacheProvider cache.Provider
-	MemberlistKV  *memberlist.KVInitService
+	readRings            map[string]*ring.Ring
+	partitionRing        *ring.PartitionInstanceRing
+	partitionRingWatcher *ring.PartitionRingWatcher
+	Overrides            overrides.Service
+	distributor          *distributor.Distributor
+	querier              *querier.Querier
+	frontend             *frontend_v1.Frontend
+	compactor            *compactor.Compactor
+	ingester             *ingester.Ingester
+	generator            *generator.Generator
+	blockBuilder         *blockbuilder.BlockBuilder
+	store                storage.Store
+	usageReport          *usagestats.Reporter
+	cacheProvider        cache.Provider
+	MemberlistKV         *memberlist.KVInitService
 
 	HTTPAuthMiddleware       middleware.Interface
 	TracesConsumerMiddleware receiver.Middleware
