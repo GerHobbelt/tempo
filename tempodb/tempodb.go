@@ -81,7 +81,7 @@ type Writer interface {
 type IterateObjectCallback func(id common.ID, obj []byte) bool
 
 type Reader interface {
-	Find(ctx context.Context, tenantID string, id common.ID, blockStart string, blockEnd string, timeStart int64, timeEnd int64, opts common.SearchOptions) ([]*tempopb.Trace, []error, error)
+	Find(ctx context.Context, tenantID string, id common.ID, blockStart string, blockEnd string, timeStart int64, timeEnd int64, opts common.SearchOptions) ([]*tempopb.TraceByIDResponse, []error, error)
 	Search(ctx context.Context, meta *backend.BlockMeta, req *tempopb.SearchRequest, opts common.SearchOptions) (*tempopb.SearchResponse, error)
 	SearchTags(ctx context.Context, meta *backend.BlockMeta, req *tempopb.SearchTagsBlockRequest, opts common.SearchOptions) (*tempopb.SearchTagsV2Response, error)
 	SearchTagValues(ctx context.Context, meta *backend.BlockMeta, req *tempopb.SearchTagValuesBlockRequest, opts common.SearchOptions) (*tempopb.SearchTagValuesResponse, error)
@@ -220,7 +220,7 @@ func (rw *readerWriter) CompleteBlock(ctx context.Context, block common.WALBlock
 	return rw.CompleteBlockWithBackend(ctx, block, rw.r, rw.w)
 }
 
-// CompleteBlock iterates the given WAL block but flushes it to the given backend instead of the default TempoDB backend. The
+// CompleteBlockWithBackend iterates the given WAL block but flushes it to the given backend instead of the default TempoDB backend. The
 // new block will have the same ID as the input block.
 func (rw *readerWriter) CompleteBlockWithBackend(ctx context.Context, block common.WALBlock, r backend.Reader, w backend.Writer) (common.BackendBlock, error) {
 	// The destination block format:
@@ -278,7 +278,7 @@ func (rw *readerWriter) BlockMetas(tenantID string) []*backend.BlockMeta {
 	return rw.blocklist.Metas(tenantID)
 }
 
-func (rw *readerWriter) Find(ctx context.Context, tenantID string, id common.ID, blockStart string, blockEnd string, timeStart int64, timeEnd int64, opts common.SearchOptions) ([]*tempopb.Trace, []error, error) {
+func (rw *readerWriter) Find(ctx context.Context, tenantID string, id common.ID, blockStart string, blockEnd string, timeStart int64, timeEnd int64, opts common.SearchOptions) ([]*tempopb.TraceByIDResponse, []error, error) {
 	// tracing instrumentation
 	logger := log.WithContext(ctx, log.Logger)
 	ctx, span := tracer.Start(ctx, "store.Find")
@@ -344,9 +344,14 @@ func (rw *readerWriter) Find(ctx context.Context, tenantID string, id common.ID,
 		return foundObject, nil
 	})
 
-	partialTraceObjs := make([]*tempopb.Trace, len(partialTraces))
+	partialTraceObjs := make([]*tempopb.TraceByIDResponse, 0)
 	for i := range partialTraces {
-		partialTraceObjs[i] = partialTraces[i].(*tempopb.Trace)
+		if trace, ok := partialTraces[i].(*tempopb.TraceByIDResponse); ok {
+			if trace == nil {
+				continue
+			}
+			partialTraceObjs = append(partialTraceObjs, trace)
+		}
 	}
 
 	span.SetAttributes(attribute.Int("blockErrs", len(funcErrs)))

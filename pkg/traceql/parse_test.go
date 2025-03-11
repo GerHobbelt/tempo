@@ -1214,6 +1214,7 @@ func TestScopedIntrinsics(t *testing.T) {
 		{in: "span:status", expected: IntrinsicStatus},
 		{in: "span:statusMessage", expected: IntrinsicStatusMessage},
 		{in: "span:id", expected: IntrinsicSpanID},
+		{in: "span:parentID", expected: IntrinsicParentID},
 		{in: "event:name", expected: IntrinsicEventName},
 		{in: "event:timeSinceStart", expected: IntrinsicEventTimeSinceStart},
 		{in: "link:traceID", expected: IntrinsicLinkTraceID},
@@ -1398,6 +1399,18 @@ func TestMetrics(t *testing.T) {
 			expected: newRootExprWithMetrics(
 				newPipeline(newSpansetFilter(NewStaticBool(true))),
 				newAverageOverTimeMetricsAggregator(
+					NewIntrinsic(IntrinsicDuration),
+					[]Attribute{
+						NewIntrinsic(IntrinsicName),
+						NewScopedAttribute(AttributeScopeSpan, false, "http.status_code"),
+					}),
+			),
+		},
+		{
+			in: `{ } | sum_over_time(duration) by(name, span.http.status_code)`,
+			expected: newRootExprWithMetrics(
+				newPipeline(newSpansetFilter(NewStaticBool(true))),
+				newMetricsAggregateWithAttr(metricsAggregateSumOverTime,
 					NewIntrinsic(IntrinsicDuration),
 					[]Attribute{
 						NewIntrinsic(IntrinsicName),

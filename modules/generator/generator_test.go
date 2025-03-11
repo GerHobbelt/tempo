@@ -60,9 +60,9 @@ overrides:
 	require.NoError(t, services.StartAndAwaitRunning(context.Background(), o))
 
 	generatorConfig := &Config{}
+	generatorConfig.RegisterFlagsAndApplyDefaults("", &flag.FlagSet{})
 	generatorConfig.Storage.Path = t.TempDir()
 	generatorConfig.Ring.KVStore.Store = "inmemory"
-	generatorConfig.Processor.SpanMetrics.RegisterFlagsAndApplyDefaults("", nil)
 	g, err := New(generatorConfig, o, prometheus.NewRegistry(), nil, nil, newTestLogger(t))
 	require.NoError(t, err)
 	require.NoError(t, services.StartAndAwaitRunning(context.Background(), g))
@@ -155,7 +155,7 @@ func BenchmarkPushSpans(b *testing.B) {
 				"span-metrics":   {},
 				"service-graphs": {},
 			},
-			spanMetricsEnableTargetInfo:             false,
+			spanMetricsEnableTargetInfo:             true,
 			spanMetricsTargetInfoExcludedDimensions: []string{"excluded}"},
 		}
 	)
@@ -165,7 +165,7 @@ func BenchmarkPushSpans(b *testing.B) {
 	wal, err := storage.New(walcfg, o, tenant, reg, log)
 	require.NoError(b, err)
 
-	inst, err := newInstance(cfg, tenant, o, wal, reg, log, nil, nil, nil)
+	inst, err := newInstance(cfg, tenant, o, wal, log, nil, nil, nil)
 	require.NoError(b, err)
 	defer inst.shutdown()
 
@@ -211,6 +211,7 @@ func BenchmarkPushSpans(b *testing.B) {
 	mem := runtime.MemStats{}
 	runtime.ReadMemStats(&mem)
 	b.ReportMetric(float64(mem.HeapInuse), "heap_in_use")
+	b.ReportMetric(float64(mem.HeapAlloc), "heap_alloc")
 }
 
 func BenchmarkCollect(b *testing.B) {
@@ -242,7 +243,7 @@ func BenchmarkCollect(b *testing.B) {
 	wal, err := storage.New(walcfg, o, tenant, reg, log)
 	require.NoError(b, err)
 
-	inst, err := newInstance(cfg, tenant, o, wal, reg, log, nil, nil, nil)
+	inst, err := newInstance(cfg, tenant, o, wal, log, nil, nil, nil)
 	require.NoError(b, err)
 	defer inst.shutdown()
 

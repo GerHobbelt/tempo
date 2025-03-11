@@ -1,14 +1,16 @@
-// Package kafka provides encoding and decoding functionality for Tempo's Kafka integration.
+// Package ingest provides encoding and decoding functionality for Tempo's Kafka integration.
 package ingest
 
 import (
 	"errors"
 	"fmt"
+	"iter"
 	math_bits "math/bits"
 	"sync"
 
-	"github.com/grafana/tempo/pkg/tempopb"
 	"github.com/twmb/franz-go/pkg/kgo"
+
+	"github.com/grafana/tempo/pkg/tempopb"
 )
 
 var encoderPool = sync.Pool{
@@ -144,4 +146,71 @@ func (d *Decoder) Reset() {
 // in Protocol Buffers' variable-length integer format.
 func sovPush(x uint64) (n int) {
 	return (math_bits.Len64(x|1) + 6) / 7
+}
+
+// GeneratorCodec is the interface used to convert data from Kafka records to the
+// tempopb.PushSpansRequest expected by the generator processors.
+type GeneratorCodec interface {
+	Decode([]byte) (iter.Seq2[*tempopb.PushSpansRequest, error], error)
+}
+
+// PushBytesDecoder unmarshals tempopb.PushBytesRequest.
+type PushBytesDecoder struct {
+	dec *Decoder
+}
+
+func NewPushBytesDecoder() *PushBytesDecoder {
+	return &PushBytesDecoder{dec: NewDecoder()}
+}
+
+// Decode implements GeneratorCodec.
+func (d *PushBytesDecoder) Decode(data []byte) (iter.Seq2[*tempopb.PushSpansRequest, error], error) {
+	d.dec.Reset()
+	spanBytes, err := d.dec.Decode(data)
+	if err != nil {
+		return nil, err
+	}
+
+	trace := tempopb.Trace{}
+	return func(yield func(*tempopb.PushSpansRequest, error) bool) {
+		for _, tr := range spanBytes.Traces {
+			trace.Reset()
+			err = trace.Unmarshal(tr.Slice)
+
+			yield(&tempopb.PushSpansRequest{
+				Batches:               trace.ResourceSpans,
+				SkipMetricsGeneration: spanBytes.SkipMetricsGeneration,
+			}, err)
+
+			tempopb.ReuseByteSlices([][]byte{tr.Slice})
+		}
+	}, nil
+}
+
+// OTLPDecoder unmarshals ptrace.Traces.
+type OTLPDecoder struct {
+	trace tempopb.Trace
+}
+
+func NewOTLPDecoder() *OTLPDecoder {
+	return &OTLPDecoder{trace: tempopb.Trace{}}
+}
+
+// Decode implements GeneratorCodec.
+func (d *OTLPDecoder) Decode(data []byte) (iter.Seq2[*tempopb.PushSpansRequest, error], error) {
+	d.trace.ResourceSpans = d.trace.ResourceSpans[:0]
+	err := d.trace.Unmarshal(data)
+	if err != nil {
+		return nil, err
+	}
+
+	return func(yield func(*tempopb.PushSpansRequest, error) bool) {
+		yield(&tempopb.PushSpansRequest{
+			Batches: d.trace.ResourceSpans,
+			// ptrace.Traces does not contain a flag that translates to this field, if we
+			// ever want to skip spans in this record type we'll need to propagate this via
+			// record metadata.
+			SkipMetricsGeneration: false,
+		}, nil)
+	}, nil
 }

@@ -297,6 +297,7 @@ func testSearchTagsAndValues(t *testing.T, ctx context.Context, i *instance, tag
 }
 
 func TestInstanceSearchTagAndValuesV2(t *testing.T) {
+	t.Parallel()
 	i, _ := defaultInstance(t)
 
 	// add dummy search data
@@ -419,28 +420,13 @@ func cacheKeysForTestSearchTagValuesV2(tagKey, query string, limit int) []string
 
 // TestInstanceSearchTagsSpecialCases tess that SearchTags errors on an unknown scope and
 // returns known instrinics for the "intrinsic" scope
-func TestInstanceSearchTagsSpecialCases(t *testing.T) {
+func TestInstanceSearchUnknownScope(t *testing.T) {
 	i, _ := defaultInstance(t)
 	userCtx := user.InjectOrgID(context.Background(), "fake")
 
 	resp, err := i.SearchTags(userCtx, "foo")
 	require.Error(t, err)
 	require.Nil(t, resp)
-
-	resp, err = i.SearchTags(userCtx, "intrinsic")
-	require.NoError(t, err)
-	require.Equal(
-		t,
-		[]string{
-			"duration", "event:name", "event:timeSinceStart",
-			"instrumentation:name", "instrumentation:version",
-			"kind", "name", "rootName", "rootServiceName",
-			"span:duration", "span:kind", "span:name",
-			"span:status", "span:statusMessage", "status", "statusMessage",
-			"trace:duration", "trace:rootName", "trace:rootService", "traceDuration",
-		},
-		resp.TagNames,
-	)
 }
 
 // TestInstanceSearchMaxBytesPerTagValuesQueryReturnsPartial confirms that SearchTagValues returns
@@ -787,6 +773,7 @@ func TestWALBlockDeletedDuringSearch(t *testing.T) {
 }
 
 func TestInstanceSearchMetrics(t *testing.T) {
+	t.Parallel()
 	i, _ := defaultInstance(t)
 
 	// This matches the encoding for live traces, since

@@ -94,13 +94,13 @@ import (
                         KIND_UNSPECIFIED KIND_INTERNAL KIND_SERVER KIND_CLIENT KIND_PRODUCER KIND_CONSUMER
                         IDURATION CHILDCOUNT NAME STATUS STATUS_MESSAGE PARENT KIND ROOTNAME ROOTSERVICENAME 
                         ROOTSERVICE TRACEDURATION NESTEDSETLEFT NESTEDSETRIGHT NESTEDSETPARENT ID 
-                        TRACE_ID SPAN_ID TIMESINCESTART VERSION
+                        TRACE_ID SPAN_ID PARENT_ID TIMESINCESTART VERSION
                         PARENT_DOT RESOURCE_DOT SPAN_DOT TRACE_COLON SPAN_COLON 
                         EVENT_COLON EVENT_DOT LINK_COLON LINK_DOT INSTRUMENTATION_COLON INSTRUMENTATION_DOT
                         COUNT AVG MAX MIN SUM
                         BY COALESCE SELECT
                         END_ATTRIBUTE
-                        RATE COUNT_OVER_TIME MIN_OVER_TIME MAX_OVER_TIME AVG_OVER_TIME QUANTILE_OVER_TIME HISTOGRAM_OVER_TIME COMPARE
+                        RATE COUNT_OVER_TIME MIN_OVER_TIME MAX_OVER_TIME AVG_OVER_TIME SUM_OVER_TIME QUANTILE_OVER_TIME HISTOGRAM_OVER_TIME COMPARE
                         WITH
 
 // Operators are listed with increasing precedence.
@@ -302,6 +302,8 @@ metricsAggregation:
     | MIN_OVER_TIME OPEN_PARENS attribute CLOSE_PARENS BY OPEN_PARENS attributeList CLOSE_PARENS                        { $$ = newMetricsAggregateWithAttr(metricsAggregateMinOverTime, $3, $7) }
     | MAX_OVER_TIME OPEN_PARENS attribute CLOSE_PARENS                                                                  { $$ = newMetricsAggregateWithAttr(metricsAggregateMaxOverTime, $3, nil) }
     | MAX_OVER_TIME OPEN_PARENS attribute CLOSE_PARENS BY OPEN_PARENS attributeList CLOSE_PARENS                        { $$ = newMetricsAggregateWithAttr(metricsAggregateMaxOverTime, $3, $7) }
+    | SUM_OVER_TIME OPEN_PARENS attribute CLOSE_PARENS                                                                  { $$ = newMetricsAggregateWithAttr(metricsAggregateSumOverTime, $3, nil) }
+    | SUM_OVER_TIME OPEN_PARENS attribute CLOSE_PARENS BY OPEN_PARENS attributeList CLOSE_PARENS                        { $$ = newMetricsAggregateWithAttr(metricsAggregateSumOverTime, $3, $7) }
     | AVG_OVER_TIME OPEN_PARENS attribute CLOSE_PARENS                                                                  { $$ = newAverageOverTimeMetricsAggregator($3, nil) }
     | AVG_OVER_TIME OPEN_PARENS attribute CLOSE_PARENS BY OPEN_PARENS attributeList CLOSE_PARENS                        { $$ = newAverageOverTimeMetricsAggregator($3, $7) }
     | QUANTILE_OVER_TIME OPEN_PARENS attribute COMMA numericList CLOSE_PARENS                                           { $$ = newMetricsAggregateQuantileOverTime($3, $5, nil) }
@@ -412,6 +414,7 @@ scopedIntrinsicField:
   | SPAN_COLON STATUS               { $$ = NewIntrinsic(IntrinsicStatus)                 }
   | SPAN_COLON STATUS_MESSAGE       { $$ = NewIntrinsic(IntrinsicStatusMessage)          }
   | SPAN_COLON ID                   { $$ = NewIntrinsic(IntrinsicSpanID)                 }
+  | SPAN_COLON PARENT_ID            { $$ = NewIntrinsic(IntrinsicParentID)               }
 // event:             
   | EVENT_COLON NAME                { $$ = NewIntrinsic(IntrinsicEventName)              }
   | EVENT_COLON TIMESINCESTART      { $$ = NewIntrinsic(IntrinsicEventTimeSinceStart)    }

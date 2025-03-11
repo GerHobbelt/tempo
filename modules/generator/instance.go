@@ -30,7 +30,14 @@ import (
 )
 
 var (
-	SupportedProcessors = []string{servicegraphs.Name, spanmetrics.Name, localblocks.Name}
+	SupportedProcessors = []string{
+		servicegraphs.Name,
+		spanmetrics.Name,
+		localblocks.Name,
+		spanmetrics.Count.String(),
+		spanmetrics.Latency.String(),
+		spanmetrics.Size.String(),
+	}
 
 	metricActiveProcessors = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "tempo",
@@ -57,6 +64,12 @@ var (
 		Name:      "metrics_generator_spans_discarded_total",
 		Help:      "The total number of discarded spans received per tenant",
 	}, []string{"tenant", "reason"})
+	metricSkippedProcessorPushes = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "tempo",
+		Name:      "metrics_generator_metrics_generation_skipped_processor_pushes_total",
+		Help: "The total number of processor pushes skipped because the request indicated that" +
+			" metrics should not be generated.",
+	}, []string{"tenant"})
 )
 
 const (
@@ -88,11 +101,10 @@ type instance struct {
 
 	shutdownCh chan struct{}
 
-	reg    prometheus.Registerer
 	logger log.Logger
 }
 
-func newInstance(cfg *Config, instanceID string, overrides metricsGeneratorOverrides, wal storage.Storage, reg prometheus.Registerer, logger log.Logger, traceWAL, rf1TraceWAL *wal.WAL, writer tempodb.Writer) (*instance, error) {
+func newInstance(cfg *Config, instanceID string, overrides metricsGeneratorOverrides, wal storage.Storage, logger log.Logger, traceWAL, rf1TraceWAL *wal.WAL, writer tempodb.Writer) (*instance, error) {
 	logger = log.With(logger, "tenant", instanceID)
 
 	i := &instance{
@@ -110,7 +122,6 @@ func newInstance(cfg *Config, instanceID string, overrides metricsGeneratorOverr
 
 		shutdownCh: make(chan struct{}, 1),
 
-		reg:    reg,
 		logger: logger,
 	}
 
@@ -194,7 +205,7 @@ func (i *instance) updateSubprocessors(desiredProcessors map[string]struct{}, de
 }
 
 func (i *instance) updateProcessors() error {
-	desiredProcessors := i.overrides.MetricsGeneratorProcessors(i.instanceID)
+	desiredProcessors := i.filterDisabledProcessors(i.overrides.MetricsGeneratorProcessors(i.instanceID))
 	desiredCfg, err := i.cfg.Processor.copyWithOverrides(i.overrides, i.instanceID)
 	if err != nil {
 		return err
@@ -244,6 +255,21 @@ func (i *instance) updateProcessors() error {
 	i.updateProcessorMetrics()
 
 	return nil
+}
+
+// filterDisabledProcessors removes processors that should never be instantiated
+// according to the generator's configuration from the given set of processors.
+func (i *instance) filterDisabledProcessors(processors map[string]struct{}) map[string]struct{} {
+	// If no processors are disabled, do not apply any filtering.
+	if !i.cfg.DisableLocalBlocks {
+		return processors
+	}
+
+	// Otherwise, do not instantiate the localblocks processor.
+	filteredProcessors := maps.Clone(processors)
+	delete(filteredProcessors, localblocks.Name)
+
+	return filteredProcessors
 }
 
 // diffProcessors compares the existing processors with the desired processors and config.
@@ -313,6 +339,8 @@ func (i *instance) addProcessor(processorName string, cfg ProcessorConfig) error
 		if i.traceQueryWAL != nil {
 			nonFlushingConfig := cfg.LocalBlocks
 			nonFlushingConfig.FlushToStorage = false
+			nonFlushingConfig.AssertMaxLiveTraces = true
+			nonFlushingConfig.AdjustTimeRangeForSlack = false
 			i.queuebasedLocalBlocks, err = localblocks.New(nonFlushingConfig, i.instanceID, i.traceQueryWAL, i.writer, i.overrides)
 			if err != nil {
 				return err
@@ -373,26 +401,41 @@ func (i *instance) pushSpans(ctx context.Context, req *tempopb.PushSpansRequest)
 	defer i.processorsMtx.RUnlock()
 
 	for _, processor := range i.processors {
-		processor.PushSpans(ctx, req)
+		switch processor.Name() {
+		case localblocks.Name:
+			processor.PushSpans(ctx, req)
+		case spanmetrics.Name, servicegraphs.Name:
+			if req.SkipMetricsGeneration {
+				metricSkippedProcessorPushes.WithLabelValues(i.instanceID).Inc()
+				break
+			}
+			processor.PushSpans(ctx, req)
+		}
 	}
 }
 
-func (i *instance) pushSpansFromQueue(ctx context.Context, req *tempopb.PushSpansRequest) {
+func (i *instance) pushSpansFromQueue(ctx context.Context, ts time.Time, req *tempopb.PushSpansRequest) {
 	i.preprocessSpans(req)
 	i.processorsMtx.RLock()
 	defer i.processorsMtx.RUnlock()
 
 	for _, processor := range i.processors {
-		// Same as normal push except we skip the local blocks processor
-		if processor.Name() == localblocks.Name {
-			continue
+		switch processor.Name() {
+		case localblocks.Name:
+			// don't push to this processor as queue consumer, instead use queue based local
+			// blocks if configured.
+		case spanmetrics.Name, servicegraphs.Name:
+			if req.SkipMetricsGeneration {
+				metricSkippedProcessorPushes.WithLabelValues(i.instanceID).Inc()
+				break
+			}
+			processor.PushSpans(ctx, req)
 		}
-		processor.PushSpans(ctx, req)
 	}
 
 	// Now we push to the non-flushing local blocks if present
 	if i.queuebasedLocalBlocks != nil {
-		i.queuebasedLocalBlocks.PushSpans(ctx, req)
+		i.queuebasedLocalBlocks.DeterministicPush(ts, req)
 	}
 }
 

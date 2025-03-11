@@ -65,6 +65,7 @@ valid:
   - '{ span:kind = client }'
   - '{ span:statusMessage = "status message" }'
   - '{ span:id = "61626364656667" }'
+  - '{ span:parentID = "84737586494" }'
   - '{ event:name = "exception" }'
   - '{ event:timeSinceStart > 1s }'
   - '{ link:traceID = "f1f1f1f1f1f1ff1f1f1f1f1f1f1f1f1" }'
@@ -148,6 +149,7 @@ valid:
   - '{} | min_over_time(duration) by (span.http.path)'
   - '{} | max_over_time(duration) by (span.http.path)'
   - '{} | avg_over_time(duration) by (span.http.path)'
+  - '{} | sum_over_time(duration) by (span.http.path)'
   - '{} | quantile_over_time(duration, 0, 0.9, 1) by (span.http.path)'
   # undocumented - nested set
   - '{ nestedSetLeft > 3 }'
