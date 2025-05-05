@@ -1,12 +1,12 @@
 module github.com/grafana/tempo
 
-go 1.24.1
+go 1.24.2
 
 require (
-	cloud.google.com/go/storage v1.51.0
+	cloud.google.com/go/storage v1.52.0
 	github.com/alecthomas/kong v1.10.0
 	github.com/alicebob/miniredis/v2 v2.34.0
-	github.com/aws/aws-sdk-go v1.55.6
+	github.com/aws/aws-sdk-go v1.55.7
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/cristalhq/hedgedhttp v0.9.1
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc
@@ -32,7 +32,7 @@ require (
 	github.com/json-iterator/go v1.1.12
 	github.com/jsternberg/zap-logfmt v1.2.0
 	github.com/klauspost/compress v1.18.0
-	github.com/minio/minio-go/v7 v7.0.90
+	github.com/minio/minio-go/v7 v7.0.91
 	github.com/mitchellh/mapstructure v1.5.1-0.20231216201459-8508981c8b6c // indirect
 	github.com/olekukonko/tablewriter v0.0.5
 	github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/jaeger v0.124.1
@@ -81,7 +81,7 @@ require (
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.18.0
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.9.0
-	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.6.0
+	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.6.1
 	github.com/evanphx/json-patch v5.9.11+incompatible
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8
 	github.com/googleapis/gax-go/v2 v2.14.1
@@ -95,14 +95,14 @@ require (
 	github.com/open-telemetry/opentelemetry-collector-contrib/receiver/kafkareceiver v0.124.1
 	github.com/open-telemetry/opentelemetry-collector-contrib/receiver/opencensusreceiver v0.124.1
 	github.com/open-telemetry/opentelemetry-collector-contrib/receiver/zipkinreceiver v0.124.1
-	github.com/parquet-go/parquet-go v0.25.0
+	github.com/parquet-go/parquet-go v0.25.1-0.20250428214007-401fed3de956
 	github.com/stoewer/parquet-cli v0.0.10
 	github.com/twmb/franz-go v1.18.1
 	github.com/twmb/franz-go/pkg/kadm v1.16.0
 	github.com/twmb/franz-go/pkg/kfake v0.0.0-20250320172111-35ab5e5f5327
 	github.com/twmb/franz-go/pkg/kmsg v1.11.2
 	github.com/twmb/franz-go/plugin/kotel v1.6.0
-	github.com/twmb/franz-go/plugin/kprom v1.2.0
+	github.com/twmb/franz-go/plugin/kprom v1.2.1
 	go.opentelemetry.io/collector/client v1.30.0
 	go.opentelemetry.io/collector/component/componenttest v0.124.0
 	go.opentelemetry.io/collector/config/configgrpc v0.124.0
@@ -129,15 +129,15 @@ require (
 
 require (
 	cel.dev/expr v0.19.2 // indirect
-	cloud.google.com/go v0.118.3 // indirect
+	cloud.google.com/go v0.120.0 // indirect
 	cloud.google.com/go/auth v0.16.0 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.6.0 // indirect
-	cloud.google.com/go/iam v1.4.1 // indirect
+	cloud.google.com/go/iam v1.5.0 // indirect
 	cloud.google.com/go/monitoring v1.24.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.11.1 // indirect
 	github.com/AzureAD/microsoft-authentication-library-for-go v1.4.2 // indirect
-	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.25.0 // indirect
+	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.27.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.51.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.51.0 // indirect
 	github.com/IBM/sarama v1.45.1 // indirect
@@ -358,7 +358,7 @@ require (
 	go.opentelemetry.io/collector/service/hostcapabilities v0.124.0 // indirect
 	go.opentelemetry.io/contrib/bridges/otelzap v0.10.0 // indirect
 	go.opentelemetry.io/contrib/bridges/prometheus v0.60.0 // indirect
-	go.opentelemetry.io/contrib/detectors/gcp v1.34.0 // indirect
+	go.opentelemetry.io/contrib/detectors/gcp v1.35.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/httptrace/otelhttptrace v0.60.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.60.0 // indirect
 	go.opentelemetry.io/contrib/otelconf v0.15.0 // indirect
@@ -384,7 +384,7 @@ require (
 	golang.org/x/tools v0.30.0 // indirect
 	gonum.org/v1/gonum v0.16.0 // indirect
 	google.golang.org/genproto v0.0.0-20250303144028-a0af3efb3deb // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20250303144028-a0af3efb3deb // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20250414145226-207652e42e2e // indirect
 	k8s.io/apimachinery v0.32.2 // indirect
 	k8s.io/client-go v0.32.2 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect

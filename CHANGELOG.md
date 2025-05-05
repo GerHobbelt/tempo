@@ -31,6 +31,8 @@
 * [CHANGE] Set querier default level to INFO [#4943](https://github.com/grafana/tempo/pull/4943) (@javiermolinar)
 * [CHANGE] Change retention to honor compactor disablement [#5044](https://github.com/grafana/tempo/pull/5044) (@zalegrala)
 * [CHANGE] Continue on error in tempo-cli rewrite-blocks [#5043](https://github.com/grafana/tempo/pull/5043) (@zalegrala)
+* [CHANGE] Update jsonnet memcached and exporter image versions [#5056](https://github.com/grafana/tempo/pull/5056) (@zalegrala)
+* [CHANGE] Update to go 1.24.2 [#5057](https://github.com/grafana/tempo/pull/5057) [#5082](https://github.com/grafana/tempo/pull/5082) [(@carsontham) 
 * [FEATURE] Add throughput SLO and metrics for the TraceByID endpoint. [#4668](https://github.com/grafana/tempo/pull/4668) (@carles-grafana)
 configurable via the throughput_bytes_slo field, and it will populate op="traces" label in slo and throughput metrics.
 * [FEATURE] Added most_recent=true query hint to TraceQL to return most recent results. [#4238](https://github.com/grafana/tempo/pull/4238) (@joe-elliott)
@@ -57,6 +59,7 @@ configurable via the throughput_bytes_slo field, and it will populate op="traces
 * [ENHANCEMENT] Update dskit to latest version [#4681](https://github.com/grafana/tempo/pull/4681) (@javiermolinar) [#4865](https://github.com/grafana/tempo/pull/4865) (@javiermolinar)
 * [ENHANCEMENT] Increase query-frontend default batch size [#4844](https://github.com/grafana/tempo/pull/4844) (@javiermolinar) 
 * [ENHANCEMENT] Improve TraceQL perf by reverting EqualRowNumber to an inlineable function.[#4705](https://github.com/grafana/tempo/pull/4705) (@joe-elliott)
+* [ENHANCEMENT] Improve TraceQL perf by preventing unnecessary decode of the first page in a column chunk.[#5050](https://github.com/grafana/tempo/pull/5050) (@joe-elliott)
 * [ENHANCEMENT] Rhythm: Implement MaxBytesPerCycle [#4835](https://github.com/grafana/tempo/pull/4835) (@javiermolinar)
 * [ENHANCEMENT] Rhythm: fair partition consumption in blockbuilders [#4655](https://github.com/grafana/tempo/pull/4655) (@javiermolinar)
 * [ENHANCEMENT] Rhythm: retry on commit error [#4874](https://github.com/grafana/tempo/pull/4874) (@javiermolinar)
@@ -69,6 +72,7 @@ configurable via the throughput_bytes_slo field, and it will populate op="traces
 * [ENHANCEMENT] Compactor: pooling changes to reduce memory usage [#4985](https://github.com/grafana/tempo/pull/4985) (@mdisibio)
 * [ENHANCEMENT] distributor: add IPv6 support [#4840](https://github.com/grafana/tempo/pull/4840) (@gjacquet)
 * [ENHANCEMENT] Support TraceQL Metrics checks in Vulture [#4886](https://github.com/grafana/tempo/pull/4886) (@ruslan-mikhailov)
+* [ENHANCEMENT] Add memcached to the resources dashboard [#5049](https://github.com/grafana/tempo/pull/5049) (@javiermolinar)
 * [ENHANCEMENT] Query-frontend: logs add msg to the log line [#4975](https://github.com/grafana/tempo/pull/4975) (@jmichalek132)
 * [BUGFIX] Choose a default step for a gRPC streaming query range request if none is provided. [#4546](https://github.com/grafana/tempo/pull/4576) (@joe-elliott)
   Correctly copy exemplars for metrics like `| rate()` when gRPC streaming.
@@ -101,6 +105,7 @@ configurable via the throughput_bytes_slo field, and it will populate op="traces
 * [BUGFIX] Correctly cache frontend jobs for query range (TraceQL Metrics). [#4771](https://github.com/grafana/tempo/pull/4771) (@joe-elliott)
 * [BUGFIX] Fix error propagation in the SyncIterator. [#5045](https://github.com/grafana/tempo/pull/5045) (@joe-elliott)
 * [BUGFIX] Various edge case fixes for query range (TraceQL Metrics) [#4962](https://github.com/grafana/tempo/pull/4962) (@ruslan-mikhailov)
+* [BUGFIX] Fix mixin to include otlp_v1_traces http write route [#5072](https://github.com/grafana/tempo/pull/5072) (@mdisibio)
 * [BUGFIX] Fix `TempoBlockListRisingQuickly` alert grouping. [#4876](https://github.com/grafana/tempo/pull/4876) (@mapno)
 
 # v2.7.2
