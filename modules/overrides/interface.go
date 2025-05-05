@@ -33,7 +33,7 @@ type Interface interface {
 	MaxLocalTracesPerUser(userID string) int
 	MaxGlobalTracesPerUser(userID string) int
 	MaxBytesPerTrace(userID string) int
-	IngestionArtificialDelay(userID string) time.Duration
+	IngestionArtificialDelay(userID string) (time.Duration, bool)
 	MaxCompactionRange(userID string) time.Duration
 	Forwarders(userID string) []string
 	MaxBytesPerTagValuesQuery(userID string) int
@@ -72,6 +72,8 @@ type Interface interface {
 	MetricsGeneratorProcessorServiceGraphsEnableMessagingSystemLatencyHistogram(userID string) bool
 	MetricsGeneratorProcessorServiceGraphsEnableVirtualNodeLabel(userID string) bool
 	MetricsGeneratorProcessorSpanMetricsTargetInfoExcludedDimensions(userID string) []string
+	MetricsGeneratorProcessorHostInfoHostIdentifiers(userID string) []string
+	MetricsGeneratorProcessorHostInfoMetricName(userID string) string
 	BlockRetention(userID string) time.Duration
 	CompactionDisabled(userID string) bool
 	MaxSearchDuration(userID string) time.Duration

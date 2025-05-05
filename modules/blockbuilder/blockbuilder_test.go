@@ -99,14 +99,10 @@ func TestBlockbuilder_without_partitions_assigned_returns_an_error(t *testing.T)
 	b, err := New(cfg, test.NewTestingLogger(t), newPartitionRingReader(), &mockOverrides{}, store)
 	require.NoError(t, err)
 	_, err = b.consume(ctx)
-	require.ErrorContains(t, err, "No partitions assigned")
+	require.ErrorIs(t, err, errNoPartitionsAssigned)
 }
 
 func TestBlockbuilder_getAssignedPartitions(t *testing.T) {
-	ctx, cancel := context.WithCancelCause(context.Background())
-	t.Cleanup(func() { cancel(errors.New("test done")) })
-
-	store := newStore(ctx, t)
 	cfg := blockbuilderConfig(t, "localhost", []int32{0, 2, 4, 6})
 	partitionRing := newPartitionRingReaderWithPartitions(map[int32]ring.PartitionDesc{
 		0:  {Id: 0, State: ring.PartitionActive},
@@ -118,7 +114,7 @@ func TestBlockbuilder_getAssignedPartitions(t *testing.T) {
 		20: {Id: 20, State: ring.PartitionActive},
 	})
 
-	b, err := New(cfg, test.NewTestingLogger(t), partitionRing, &mockOverrides{}, store)
+	b, err := New(cfg, test.NewTestingLogger(t), partitionRing, &mockOverrides{}, nil)
 	require.NoError(t, err)
 	partitions := b.getAssignedPartitions()
 	assert.Equal(t, []int32{0, 2}, partitions)
@@ -534,6 +530,80 @@ func TestBlockbuilder_noDoubleConsumption(t *testing.T) {
 	require.Equal(t, 2, countFlushedTraces(store))
 }
 
+func TestBlockBuilder_honor_maxBytesPerCycle(t *testing.T) {
+	cases := []struct {
+		name             string
+		maxBytesPerCycle int
+		expectedCommits  int32
+		expectedWrites   int32
+	}{
+		{
+			name:             "Limited to 1 bytes per cycle",
+			maxBytesPerCycle: 1,
+			expectedCommits:  1,
+			expectedWrites:   2,
+		},
+		{
+			name:             "Limited to 100_000 bytes per cycle",
+			maxBytesPerCycle: 100_000,
+			expectedCommits:  1,
+			expectedWrites:   1,
+		},
+		{
+			name:             "Unlimited bytes per cycle",
+			maxBytesPerCycle: 0,
+			expectedCommits:  1,
+			expectedWrites:   1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancelCause(context.Background())
+			t.Cleanup(func() { cancel(errors.New("test done")) })
+
+			k, address := testkafka.CreateCluster(t, 1, "test-topic")
+
+			kafkaCommits := atomic.NewInt32(0)
+			k.ControlKey(kmsg.OffsetCommit, func(kmsg.Request) (kmsg.Response, error, bool) {
+				kafkaCommits.Inc()
+				return nil, nil, false
+			})
+
+			storageWrites := atomic.NewInt32(0)
+			store := newStoreWrapper(newStore(ctx, t), func(ctx context.Context, block tempodb.WriteableBlock, store storage.Store) error {
+				storageWrites.Inc()
+				return store.WriteBlock(ctx, block)
+			})
+
+			cfg := blockbuilderConfig(t, address, []int32{0})
+			cfg.MaxBytesPerCycle = uint64(tc.maxBytesPerCycle)
+
+			b, err := New(cfg, test.NewTestingLogger(t), newPartitionRingReader(), &mockOverrides{}, store)
+			require.NoError(t, err)
+			require.NoError(t, services.StartAndAwaitRunning(ctx, b))
+			t.Cleanup(func() {
+				require.NoError(t, services.StopAndAwaitTerminated(ctx, b))
+			})
+
+			client := newKafkaClient(t, cfg.IngestStorageConfig.Kafka)
+			// We send two records with a size less than 30KB
+			sendReq(t, ctx, client, util.FakeTenantID)
+			producedRecords := sendReq(t, ctx, client, util.FakeTenantID)
+
+			require.Eventually(t, func() bool {
+				return kafkaCommits.Load() == tc.expectedCommits
+			}, time.Minute, time.Second)
+
+			require.Eventually(t, func() bool {
+				return storageWrites.Load() == tc.expectedWrites
+			}, 30*time.Second, time.Second)
+
+			requireLastCommitEquals(t, ctx, client, producedRecords[len(producedRecords)-1].Offset+1)
+		})
+	}
+}
+
 func TestBlockbuilder_marksOldBlocksCompacted(t *testing.T) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	t.Cleanup(func() { cancel(errors.New("test done")) })
@@ -603,8 +673,8 @@ func TestBlockbuilder_marksOldBlocksCompacted(t *testing.T) {
 	// Check that the offset was committed correctly (lastRec.Offset + 1)
 	requireLastCommitEquals(t, ctx, client, lastRecordOffset+1)
 
-	// Enable polling to trigger another immediate poll
-	store.EnablePolling(ctx, &ownEverythingSharder{})
+	// Sleep to let the poller cycle
+	time.Sleep(100 * time.Millisecond)
 
 	// Verify that each tenant only has 1 active block
 	require.Equal(t, 1, len(store.BlockMetas(goodTenantID)))
@@ -746,7 +816,7 @@ func newStoreWithLogger(ctx context.Context, t testing.TB, log log.Logger) stora
 			WAL: &wal.Config{
 				Filepath: tmpDir,
 			},
-			BlocklistPoll: 5 * time.Second,
+			BlocklistPoll: 100 * time.Millisecond,
 		},
 	}, nil, log)
 	require.NoError(t, err)

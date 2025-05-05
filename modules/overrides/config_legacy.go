@@ -66,6 +66,7 @@ func (c *Overrides) toLegacy() LegacyOverrides {
 		MaxBytesPerTrace: c.Global.MaxBytesPerTrace,
 
 		DedicatedColumns: c.Storage.DedicatedColumns,
+		CostAttribution:  c.CostAttribution,
 	}
 }
 
@@ -117,6 +118,8 @@ type LegacyOverrides struct {
 	MetricsGeneratorProcessorLocalBlocksFlushCheckPeriod                        time.Duration                    `yaml:"metrics_generator_processor_local_blocks_flush_check_period" json:"metrics_generator_processor_local_blocks_flush_check_period"`
 	MetricsGeneratorProcessorLocalBlocksTraceIdlePeriod                         time.Duration                    `yaml:"metrics_generator_processor_local_blocks_trace_idle_period" json:"metrics_generator_processor_local_blocks_trace_idle_period"`
 	MetricsGeneratorProcessorLocalBlocksCompleteBlockTimeout                    time.Duration                    `yaml:"metrics_generator_processor_local_blocks_complete_block_timeout" json:"metrics_generator_processor_local_blocks_complete_block_timeout"`
+	MetricsGeneratorProcessorHostInfoHostIdentifiers                            []string                         `yaml:"metrics_generator_processor_host_info_host_identifiers" json:"metrics_generator_processor_host_info_host_identifiers"`
+	MetricsGeneratorProcessorHostInfoMetricName                                 string                           `yaml:"metrics_generator_processor_host_info_metric_name" json:"metrics_generator_processor_host_info_metric_name"`
 	MetricsGeneratorIngestionSlack                                              time.Duration                    `yaml:"metrics_generator_ingestion_time_range_slack" json:"metrics_generator_ingestion_time_range_slack"`
 
 	// Compactor enforced limits.
@@ -137,7 +140,7 @@ type LegacyOverrides struct {
 	//  is not used when doing a trace by id lookup.
 	MaxBytesPerTrace int `yaml:"max_bytes_per_trace" json:"max_bytes_per_trace"`
 
-	CostAttribution CostAttributionOverrides `yaml:"cost_attribution,omitempty" json:"cost_attribution,omitempty"`
+	CostAttribution CostAttributionOverrides `yaml:"cost_attribution" json:"cost_attribution"`
 
 	// tempodb limits
 	DedicatedColumns backend.DedicatedColumns `yaml:"parquet_dedicated_columns" json:"parquet_dedicated_columns"`
@@ -205,6 +208,10 @@ func (l *LegacyOverrides) toNewLimits() Overrides {
 					FlushCheckPeriod:     l.MetricsGeneratorProcessorLocalBlocksFlushCheckPeriod,
 					TraceIdlePeriod:      l.MetricsGeneratorProcessorLocalBlocksTraceIdlePeriod,
 					CompleteBlockTimeout: l.MetricsGeneratorProcessorLocalBlocksCompleteBlockTimeout,
+				},
+				HostInfo: HostInfoOverrides{
+					HostIdentifiers: l.MetricsGeneratorProcessorHostInfoHostIdentifiers,
+					MetricName:      l.MetricsGeneratorProcessorHostInfoMetricName,
 				},
 			},
 		},

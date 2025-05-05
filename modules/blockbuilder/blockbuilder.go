@@ -23,6 +23,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -72,6 +75,10 @@ var (
 		Name:      "fetch_errors_total",
 		Help:      "Total number of errors while fetching by the consumer.",
 	}, []string{"partition"})
+
+	tracer = otel.Tracer("modules/blockbuilder")
+
+	errNoPartitionsAssigned = errors.New("no partitions assigned")
 )
 
 type BlockBuilder struct {
@@ -224,8 +231,12 @@ func (b *BlockBuilder) running(ctx context.Context) error {
 // all the partitions lag is less than the cycle duration. When that happen it returns time to wait before another consuming cycle, based on the last record timestamp
 func (b *BlockBuilder) consume(ctx context.Context) (time.Duration, error) {
 	partitions := b.getAssignedPartitions()
+
+	ctx, span := tracer.Start(ctx, "blockbuilder.consume", trace.WithAttributes(attribute.String("active_partitions", formatActivePartitions(partitions))))
+	defer span.End()
+
 	if len(partitions) == 0 {
-		return b.cfg.ConsumeCycleDuration, errors.New("No partitions assigned")
+		return b.cfg.ConsumeCycleDuration, errNoPartitionsAssigned
 	}
 
 	level.Info(b.logger).Log("msg", "starting consume cycle", "active_partitions", formatActivePartitions(partitions))
@@ -280,15 +291,22 @@ func (b *BlockBuilder) consume(ctx context.Context) (time.Duration, error) {
 }
 
 func (b *BlockBuilder) consumePartition(ctx context.Context, ps partitionState) (lastTs time.Time, commitOffset int64, err error) {
+	ctx, span := tracer.Start(ctx, "blockbuilder.consumePartition",
+		trace.WithAttributes(attribute.Int("partition", int(ps.partition)),
+			attribute.String("last_record_ts", ps.lastRecordTs.String())))
+
 	defer func(t time.Time) {
 		metricProcessPartitionSectionDuration.WithLabelValues(strconv.Itoa(int(ps.partition))).Observe(time.Since(t).Seconds())
+		span.End()
 	}(time.Now())
 
 	var (
 		dur              = b.cfg.ConsumeCycleDuration
 		topic            = b.cfg.IngestStorageConfig.Kafka.Topic
 		group            = b.cfg.IngestStorageConfig.Kafka.ConsumerGroup
+		maxBytesPerCycle = b.cfg.MaxBytesPerCycle
 		partLabel        = strconv.Itoa(int(ps.partition))
+		consumedBytes    uint64
 		startOffset      kgo.Offset
 		init             bool
 		writer           *writer
@@ -305,7 +323,6 @@ func (b *BlockBuilder) consumePartition(ctx context.Context, ps partitionState) 
 		"commit_offset", ps.commitOffset,
 		"start_offset", startOffset,
 	)
-
 	// We always rewind the partition's offset to the commit offset by reassigning the partition to the client (this triggers partition assignment).
 	// This is so the cycle started exactly at the commit offset, and not at what was (potentially over-) consumed previously.
 	// In the end, we remove the partition from the client (refer to the defer below) to guarantee the client always consumes
@@ -343,13 +360,14 @@ outer:
 			rec := iter.Next()
 			metricFetchBytesTotal.WithLabelValues(partLabel).Add(float64(len(rec.Value)))
 			metricFetchRecordsTotal.WithLabelValues(partLabel).Inc()
+			recordSizeBytes := uint64(len(rec.Value))
 
 			level.Debug(b.logger).Log(
 				"msg", "processing record",
 				"partition", rec.Partition,
 				"offset", rec.Offset,
 				"timestamp", rec.Timestamp,
-				"len", len(rec.Value),
+				"len", recordSizeBytes,
 			)
 
 			// Initialize on first record
@@ -369,6 +387,11 @@ outer:
 					b.wal,
 					b.enc)
 				init = true
+
+				// TODO(mapno): This call creates a link to the parent span in this trace.
+				//  While this creates a redundant self-reference in the trace visualization,
+				//  the functionality still works correctly. Low priority to fix.
+				span.AddLink(trace.LinkFromContext(rec.Context))
 			}
 
 			if rec.Timestamp.After(end) {
@@ -379,8 +402,23 @@ outer:
 			if err != nil {
 				return time.Time{}, -1, err
 			}
+
 			processedRecords++
 			lastRec = rec
+			consumedBytes += recordSizeBytes
+
+			if maxBytesPerCycle > 0 && consumedBytes >= maxBytesPerCycle {
+				level.Debug(b.logger).Log(
+					"msg", "max bytes per cycle reached",
+					"partition", ps.partition,
+					"timestamp", rec.Timestamp,
+				)
+				span.AddEvent("max bytes per cycle reached", trace.WithAttributes(
+					attribute.Int64("maxBytesPerCycle", int64(maxBytesPerCycle)),
+					attribute.Int64("consumedBytes", int64(consumedBytes))),
+				)
+				break outer
+			}
 		}
 	}
 
@@ -392,6 +430,7 @@ outer:
 			"commit_offset", ps.commitOffset,
 			"start_offset", startOffset,
 		)
+		span.AddEvent("no data")
 		// No data means we are caught up
 		ingest.SetPartitionLagSeconds(group, ps.partition, 0)
 		return time.Time{}, -1, nil
@@ -424,6 +463,8 @@ outer:
 func (b *BlockBuilder) commitOffset(ctx context.Context, offset kadm.Offset, group string, partition int32) error {
 	offsets := make(kadm.Offsets)
 	offsets.Add(offset)
+
+	trace.SpanFromContext(ctx).AddEvent("committing offset", trace.WithAttributes(attribute.Int64("at", offset.At)))
 
 	boff := backoff.New(ctx, backoff.Config{
 		MinBackoff: 100 * time.Millisecond,

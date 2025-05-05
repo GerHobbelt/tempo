@@ -23,7 +23,6 @@ import (
 	"go.opentelemetry.io/otel"
 	oc_bridge "go.opentelemetry.io/otel/bridge/opencensus"
 	ot_bridge "go.opentelemetry.io/otel/bridge/opentracing"
-	"go.opentelemetry.io/otel/exporters/jaeger"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	tracesdk "go.opentelemetry.io/otel/sdk/trace"
@@ -54,11 +53,6 @@ func init() {
 
 	// Register the gogocodec as early as possible.
 	encoding.RegisterCodec(gogocodec.NewCodec())
-
-	// Register jaeger exporter
-	autoexport.RegisterSpanExporter("jaeger", func(_ context.Context) (tracesdk.SpanExporter, error) {
-		return jaeger.New(jaeger.WithAgentEndpoint())
-	})
 }
 
 func main() {
@@ -118,7 +112,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	level.Info(log.Logger).Log("msg", "Starting Tempo", "version", version.Info())
+	level.Info(log.Logger).Log(
+		"msg", "Starting Tempo",
+		"version", version.Info(),
+		"target", config.Target,
+	)
 
 	if err := t.Run(); err != nil {
 		level.Error(log.Logger).Log("msg", "error running Tempo", "err", err)

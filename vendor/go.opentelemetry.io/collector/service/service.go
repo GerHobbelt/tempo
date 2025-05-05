@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"runtime"
 
-	config "go.opentelemetry.io/contrib/config/v0.3.0"
+	config "go.opentelemetry.io/contrib/otelconf/v0.3.0"
 	"go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/metric"
 	sdkresource "go.opentelemetry.io/otel/sdk/resource"
@@ -33,6 +33,7 @@ import (
 	"go.opentelemetry.io/collector/service/extensions"
 	"go.opentelemetry.io/collector/service/internal/builders"
 	"go.opentelemetry.io/collector/service/internal/graph"
+	"go.opentelemetry.io/collector/service/internal/moduleinfo"
 	"go.opentelemetry.io/collector/service/internal/proctelemetry"
 	"go.opentelemetry.io/collector/service/internal/resource"
 	"go.opentelemetry.io/collector/service/internal/status"
@@ -55,6 +56,12 @@ var disableHighCardinalityMetricsFeatureGate = featuregate.GlobalRegistry().Must
 	featuregate.StageAlpha,
 	featuregate.WithRegisterDescription("controls whether the collector should enable potentially high"+
 		"cardinality metrics. The gate will be removed when the collector allows for view configuration."))
+
+// ModuleInfo describes the Go module for a particular component.
+type ModuleInfo = moduleinfo.ModuleInfo
+
+// ModuleInfo describes the go module for all components.
+type ModuleInfos = moduleinfo.ModuleInfos
 
 // Settings holds configuration for building a new Service.
 type Settings struct {
@@ -88,7 +95,7 @@ type Settings struct {
 	ExtensionsFactories map[component.Type]extension.Factory
 
 	// ModuleInfo describes the go module for each component.
-	ModuleInfo extension.ModuleInfo
+	ModuleInfos ModuleInfos
 
 	// AsyncErrorChannel is the channel that is used to report fatal errors.
 	AsyncErrorChannel chan error
@@ -117,7 +124,7 @@ func New(ctx context.Context, set Settings, cfg Config) (*Service, error) {
 			Connectors: builders.NewConnector(set.ConnectorsConfigs, set.ConnectorsFactories),
 			Extensions: builders.NewExtension(set.ExtensionsConfigs, set.ExtensionsFactories),
 
-			ModuleInfo:        set.ModuleInfo,
+			ModuleInfos:       set.ModuleInfos,
 			BuildInfo:         set.BuildInfo,
 			AsyncErrorChannel: set.AsyncErrorChannel,
 		},
@@ -130,11 +137,18 @@ func New(ctx context.Context, set Settings, cfg Config) (*Service, error) {
 
 	sch := semconv.SchemaURL
 
-	views := configureViews(cfg.Telemetry.Metrics.Level)
+	mpConfig := &cfg.Telemetry.Metrics.MeterProvider
 
-	readers := cfg.Telemetry.Metrics.Readers
+	if mpConfig.Views != nil {
+		if disableHighCardinalityMetricsFeatureGate.IsEnabled() {
+			return nil, errors.New("telemetry.disableHighCardinalityMetrics gate is incompatible with service::telemetry::metrics::views")
+		}
+	} else {
+		mpConfig.Views = configureViews(cfg.Telemetry.Metrics.Level)
+	}
+
 	if cfg.Telemetry.Metrics.Level == configtelemetry.LevelNone {
-		readers = []config.MetricReader{}
+		mpConfig.Readers = []config.MetricReader{}
 	}
 
 	sdk, err := config.NewSDK(
@@ -144,10 +158,7 @@ func New(ctx context.Context, set Settings, cfg Config) (*Service, error) {
 				LoggerProvider: &config.LoggerProvider{
 					Processors: cfg.Telemetry.Logs.Processors,
 				},
-				MeterProvider: &config.MeterProvider{
-					Readers: readers,
-					Views:   views,
-				},
+				MeterProvider: mpConfig,
 				TracerProvider: &config.TracerProvider{
 					Processors: cfg.Telemetry.Traces.Processors,
 				},
@@ -190,13 +201,10 @@ func New(ctx context.Context, set Settings, cfg Config) (*Service, error) {
 		err = multierr.Append(err, sdk.Shutdown(ctx))
 		return nil, fmt.Errorf("failed to create meter provider: %w", err)
 	}
-
-	logsAboutMeterProvider(logger, cfg.Telemetry.Metrics, mp)
 	srv.telemetrySettings = component.TelemetrySettings{
 		Logger:         logger,
 		MeterProvider:  mp,
 		TracerProvider: tracerProvider,
-		MetricsLevel:   cfg.Telemetry.Metrics.Level,
 		// Construct telemetry attributes from build info and config's resource attributes.
 		Resource: pcommonRes,
 	}
@@ -218,9 +226,13 @@ func New(ctx context.Context, set Settings, cfg Config) (*Service, error) {
 		return nil, err
 	}
 
-	if err = proctelemetry.RegisterProcessMetrics(srv.telemetrySettings); err != nil {
-		return nil, fmt.Errorf("failed to register process metrics: %w", err)
+	if cfg.Telemetry.Metrics.Level != configtelemetry.LevelNone && (len(mpConfig.Readers) != 0 || cfg.Telemetry.Metrics.Address != "") {
+		if err = proctelemetry.RegisterProcessMetrics(srv.telemetrySettings); err != nil {
+			return nil, fmt.Errorf("failed to register process metrics: %w", err)
+		}
 	}
+
+	logsAboutMeterProvider(logger, cfg.Telemetry.Metrics, mp)
 
 	return srv, nil
 }
@@ -342,7 +354,6 @@ func (srv *Service) initExtensions(ctx context.Context, cfg extensions.Config) e
 		Telemetry:  srv.telemetrySettings,
 		BuildInfo:  srv.buildInfo,
 		Extensions: srv.host.Extensions,
-		ModuleInfo: srv.host.ModuleInfo,
 	}
 	if srv.host.ServiceExtensions, err = extensions.New(ctx, extensionsSettings, cfg, extensions.WithReporter(srv.host.Reporter)); err != nil {
 		return fmt.Errorf("failed to build extensions: %w", err)
@@ -399,6 +410,21 @@ func dropViewOption(selector *config.ViewSelector) config.View {
 func configureViews(level configtelemetry.Level) []config.View {
 	views := []config.View{}
 
+	if level < configtelemetry.LevelDetailed {
+		// Drop all otelhttp and otelgrpc metrics if the level is not detailed.
+		views = append(views,
+			dropViewOption(&config.ViewSelector{
+				MeterName: ptr("go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"),
+			}),
+			dropViewOption(&config.ViewSelector{
+				MeterName: ptr("go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"),
+			}),
+		)
+	}
+
+	// Make sure to add the AttributeKeys view after the AggregationDrop view:
+	// Only the first view outputting a given metric identity is actually used, so placing the
+	// AttributeKeys view first would never drop the metrics regadless of level.
 	if disableHighCardinalityMetricsFeatureGate.IsEnabled() {
 		views = append(views, []config.View{
 			{
@@ -429,18 +455,6 @@ func configureViews(level configtelemetry.Level) []config.View {
 				},
 			},
 		}...)
-	}
-
-	if level < configtelemetry.LevelDetailed {
-		// Drop all otelhttp and otelgrpc metrics if the level is not detailed.
-		views = append(views,
-			dropViewOption(&config.ViewSelector{
-				MeterName: ptr("go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"),
-			}),
-			dropViewOption(&config.ViewSelector{
-				MeterName: ptr("go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"),
-			}),
-		)
 	}
 
 	// otel-arrow library metrics
@@ -504,8 +518,12 @@ func configureViews(level configtelemetry.Level) []config.View {
 	}
 
 	// Batch processor metrics
-	if level < configtelemetry.LevelDetailed {
-		scope := ptr("go.opentelemetry.io/collector/processor/batchprocessor")
+	scope := ptr("go.opentelemetry.io/collector/processor/batchprocessor")
+	if level < configtelemetry.LevelNormal {
+		views = append(views, dropViewOption(&config.ViewSelector{
+			MeterName: scope,
+		}))
+	} else if level < configtelemetry.LevelDetailed {
 		views = append(views, dropViewOption(&config.ViewSelector{
 			MeterName:      scope,
 			InstrumentName: ptr("otelcol_processor_batch_batch_send_size_bytes"),

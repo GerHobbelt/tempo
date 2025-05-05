@@ -9,7 +9,7 @@ import (
 	"net"
 	"strconv"
 
-	config "go.opentelemetry.io/contrib/config/v0.3.0"
+	config "go.opentelemetry.io/contrib/otelconf/v0.3.0"
 
 	"go.opentelemetry.io/collector/config/configtelemetry"
 	"go.opentelemetry.io/collector/confmap"
@@ -21,22 +21,22 @@ var _ confmap.Unmarshaler = (*Config)(nil)
 
 var disableAddressFieldForInternalTelemetryFeatureGate = featuregate.GlobalRegistry().MustRegister(
 	"telemetry.disableAddressFieldForInternalTelemetry",
-	featuregate.StageAlpha,
+	featuregate.StageBeta,
 	featuregate.WithRegisterFromVersion("v0.111.0"),
-	featuregate.WithRegisterToVersion("v0.114.0"),
+	featuregate.WithRegisterToVersion("v0.123.0"),
 	featuregate.WithRegisterDescription("controls whether the deprecated address field for internal telemetry is still supported"))
 
 // Config defines the configurable settings for service telemetry.
 type Config struct {
 	Logs    LogsConfig    `mapstructure:"logs"`
 	Metrics MetricsConfig `mapstructure:"metrics"`
-	Traces  TracesConfig  `mapstructure:"traces"`
+	Traces  TracesConfig  `mapstructure:"traces,omitempty"`
 
 	// Resource specifies user-defined attributes to include with all emitted telemetry.
 	// Note that some attributes are added automatically (e.g. service.version) even
 	// if they are not specified here. In order to suppress such attributes the
 	// attribute must be specified in this map with null YAML value (nil string pointer).
-	Resource map[string]*string `mapstructure:"resource"`
+	Resource map[string]*string `mapstructure:"resource,omitempty"`
 }
 
 // LogsConfig defines the configurable settings for service telemetry logs.
@@ -109,6 +109,10 @@ func (c *Config) Validate() error {
 	// Check when service telemetry metric level is not none, the metrics readers should not be empty
 	if c.Metrics.Level != configtelemetry.LevelNone && len(c.Metrics.Readers) == 0 {
 		return errors.New("collector telemetry metrics reader should exist when metric level is not none")
+	}
+
+	if c.Metrics.Views != nil && c.Metrics.Level != configtelemetry.LevelDetailed {
+		return errors.New("service::telemetry::metrics::views can only be set when service::telemetry::metrics::level is detailed")
 	}
 
 	return nil

@@ -11,19 +11,18 @@ import (
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/xconsumer"
 	"go.opentelemetry.io/collector/internal/fanoutconsumer"
+	"go.opentelemetry.io/collector/internal/telemetry"
 	"go.opentelemetry.io/collector/pipeline"
 	"go.opentelemetry.io/collector/pipeline/xpipeline"
 	"go.opentelemetry.io/collector/receiver"
+	"go.opentelemetry.io/collector/service/internal/attribute"
 	"go.opentelemetry.io/collector/service/internal/builders"
-	"go.opentelemetry.io/collector/service/internal/components"
 )
-
-const receiverSeed = "receiver"
 
 // A receiver instance can be shared by multiple pipelines of the same type.
 // Therefore, nodeID is derived from "pipeline type" and "component ID".
 type receiverNode struct {
-	nodeID
+	attribute.Attributes
 	componentID  component.ID
 	pipelineType pipeline.Signal
 	component.Component
@@ -31,7 +30,7 @@ type receiverNode struct {
 
 func newReceiverNode(pipelineType pipeline.Signal, recvID component.ID) *receiverNode {
 	return &receiverNode{
-		nodeID:       newNodeID(receiverSeed, pipelineType.String(), recvID.String()),
+		Attributes:   attribute.Receiver(pipelineType, recvID),
 		componentID:  recvID,
 		pipelineType: pipelineType,
 	}
@@ -43,8 +42,10 @@ func (n *receiverNode) buildComponent(ctx context.Context,
 	builder *builders.ReceiverBuilder,
 	nexts []baseConsumer,
 ) error {
-	tel.Logger = components.ReceiverLogger(tel.Logger, n.componentID, n.pipelineType)
 	set := receiver.Settings{ID: n.componentID, TelemetrySettings: tel, BuildInfo: info}
+	if telemetry.NewPipelineTelemetryGate.IsEnabled() {
+		set.TelemetrySettings = telemetry.WithAttributeSet(set.TelemetrySettings, *n.Attributes.Set())
+	}
 	var err error
 	switch n.pipelineType {
 	case pipeline.SignalTraces:
