@@ -167,8 +167,8 @@
           {
             alert: 'TempoBlockListRisingQuickly',
             expr: |||
-              avg(tempodb_blocklist_length{namespace=~"%(namespace)s", container="compactor"}) / avg(tempodb_blocklist_length{namespace=~"%(namespace)s", container="compactor"} offset 7d) > 1.4
-            ||| % { namespace: $._config.namespace },
+              avg(tempodb_blocklist_length{namespace=~"%(namespace)s", container="compactor"}) / avg(tempodb_blocklist_length{namespace=~"%(namespace)s", container="compactor"} offset 7d) by (%(group)s) > 1.4
+            ||| % { namespace: $._config.namespace, group: $._config.group_by_cluster },
             'for': '15m',
             labels: {
               severity: 'critical',
@@ -263,6 +263,34 @@
             annotations: {
               message: 'Tempo ingester has encountered errors while replaying a block on startup in {{ $labels.%s }}/{{ $labels.namespace }} for tenant {{ $labels.tenant }}' % $._config.per_cluster_label,
               runbook_url: 'https://github.com/grafana/tempo/tree/main/operations/tempo-mixin/runbook.md#TempoIngesterReplayErrors',
+            },
+          },
+          {
+            alert: 'TempoPartitionLagWarning',
+            expr: |||
+              max by (%s, group, partition) (tempo_ingest_group_partition_lag_seconds{namespace=~"%s", group=~"%s"}) > %d
+            ||| % [$._config.group_by_cluster, $._config.namespace, $._config.alerts.partition_lag_group_filter, $._config.alerts.partition_lag_warning_seconds],
+            'for': '5m',
+            labels: {
+              severity: 'warning',
+            },
+            annotations: {
+              message: 'Tempo partition {{ $labels.partition }} in consumer group {{ $labels.group }} is lagging by more than %d seconds in {{ $labels.%s }}/{{ $labels.namespace }}.' % [$._config.alerts.partition_lag_warning_seconds, $._config.per_cluster_label],
+              runbook_url: 'https://github.com/grafana/tempo/tree/main/operations/tempo-mixin/runbook.md#TempoPartitionLag',
+            },
+          },
+          {
+            alert: 'TempoPartitionLagCritical',
+            expr: |||
+              max by (%s, group, partition) (tempo_ingest_group_partition_lag_seconds{namespace=~"%s", group=~"%s"}) > %d
+            ||| % [$._config.group_by_cluster, $._config.namespace, $._config.alerts.partition_lag_group_filter, $._config.alerts.partition_lag_critical_seconds],
+            'for': '5m',
+            labels: {
+              severity: 'critical',
+            },
+            annotations: {
+              message: 'Tempo partition {{ $labels.partition }} in consumer group {{ $labels.group }} is lagging by more than %d seconds in {{ $labels.%s }}/{{ $labels.namespace }}.' % [$._config.alerts.partition_lag_critical_seconds, $._config.per_cluster_label],
+              runbook_url: 'https://github.com/grafana/tempo/tree/main/operations/tempo-mixin/runbook.md#TempoPartitionLag',
             },
           },
         ],

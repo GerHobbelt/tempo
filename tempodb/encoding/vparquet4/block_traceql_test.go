@@ -165,6 +165,11 @@ func TestBackendBlockSearchTraceQL(t *testing.T) {
 		{"instrumentation:name", traceql.MustExtractFetchSpansRequestWithMetadata(`{instrumentation:name = "scope-1"}`)},
 		{"instrumentation:version", traceql.MustExtractFetchSpansRequestWithMetadata(`{instrumentation:version = "version-1"}`)},
 		{"instrumentation.attr-str", traceql.MustExtractFetchSpansRequestWithMetadata(`{instrumentation.scope-attr-str = "scope-attr-1"}`)},
+		// Operations containing nil
+		{".foo != nil", traceql.MustExtractFetchSpansRequestWithMetadata(`{.foo != nil}`)},
+		{"nil != .foo", traceql.MustExtractFetchSpansRequestWithMetadata(`{nil != .foo}`)},
+		{"span.http.status_code != nil", traceql.MustExtractFetchSpansRequestWithMetadata(`{span.http.status_code != nil}`)},
+		{"nil != span.http.status_code", traceql.MustExtractFetchSpansRequestWithMetadata(`{nil != span.http.status_code}`)},
 		// Basic data types and operations
 		{".float = 456.78", traceql.MustExtractFetchSpansRequestWithMetadata(`{.float = 456.78}`)},             // Float ==
 		{".float != 456.79", traceql.MustExtractFetchSpansRequestWithMetadata(`{.float != 456.79}`)},           // Float !=
@@ -214,6 +219,8 @@ func TestBackendBlockSearchTraceQL(t *testing.T) {
 		{"service.name present on span", traceql.MustExtractFetchSpansRequestWithMetadata(`{.` + LabelServiceName + ` = "spanservicename"}`)},
 		{"http.status_code doesn't match type of dedicated column", traceql.MustExtractFetchSpansRequestWithMetadata(`{.` + LabelHTTPStatusCode + ` = "500ouch"}`)},
 		{`.foo = "def"`, traceql.MustExtractFetchSpansRequestWithMetadata(`{.foo = "def"}`)},
+		{".bool && true", traceql.MustExtractFetchSpansRequestWithMetadata(`{.bool && true}`)},
+		{"false || .bool", traceql.MustExtractFetchSpansRequestWithMetadata(`{false || .bool}`)},
 		{
 			name: "Range at unscoped",
 			req: traceql.FetchSpansRequest{
