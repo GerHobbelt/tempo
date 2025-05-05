@@ -38,8 +38,6 @@ type BackendScheduler struct {
 
 	work *work.Work
 
-	mtx sync.Mutex
-
 	reader backend.RawReader
 	writer backend.RawWriter
 
@@ -127,9 +125,9 @@ func (s *BackendScheduler) starting(ctx context.Context) error {
 		go func(jobs <-chan *work.Job) {
 			defer wg.Done()
 
-			for {
-				var job *work.Job
+			var job *work.Job
 
+			for {
 				select {
 				case job = <-jobs:
 				case <-ctx.Done():
@@ -186,9 +184,6 @@ func (s *BackendScheduler) stopping(_ error) error {
 
 // Next implements the BackendSchedulerServer interface.  It returns the next queued job for a worker.
 func (s *BackendScheduler) Next(ctx context.Context, req *tempopb.NextJobRequest) (*tempopb.NextJobResponse, error) {
-	s.mtx.Lock()
-	defer s.mtx.Unlock()
-
 	ctx, span := tracer.Start(ctx, "Next")
 	defer span.End()
 
@@ -218,6 +213,9 @@ func (s *BackendScheduler) Next(ctx context.Context, req *tempopb.NextJobRequest
 
 		return resp, nil
 	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, s.cfg.JobTimeout)
+	defer cancel()
 
 	// Try to get a job from the merged channel
 	select {
@@ -256,7 +254,7 @@ func (s *BackendScheduler) Next(ctx context.Context, req *tempopb.NextJobRequest
 		level.Info(log.Logger).Log("msg", "assigned job to worker", "job_id", j.ID, "worker", req.WorkerId)
 
 		return resp, nil
-	default:
+	case <-timeoutCtx.Done():
 		span.SetAttributes(attribute.Int("job_q_depth", len(s.mergedJobs)))
 		metricJobsNotFound.WithLabelValues(req.WorkerId).Inc()
 
@@ -266,9 +264,6 @@ func (s *BackendScheduler) Next(ctx context.Context, req *tempopb.NextJobRequest
 
 // UpdateJob implements the BackendSchedulerServer interface
 func (s *BackendScheduler) UpdateJob(ctx context.Context, req *tempopb.UpdateJobStatusRequest) (*tempopb.UpdateJobStatusResponse, error) {
-	s.mtx.Lock()
-	defer s.mtx.Unlock()
-
 	j := s.work.GetJob(req.JobId)
 	if j == nil {
 		return &tempopb.UpdateJobStatusResponse{}, status.Error(codes.NotFound, work.ErrJobNotFound.Error())

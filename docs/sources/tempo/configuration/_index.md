@@ -766,7 +766,8 @@ query_frontend:
         [max_exemplars: <int> | default = 100 ]
 
         # Maximum number of time series returned for a metrics query.
-        [max_response_series: <int> | default = 1000]
+        # Default is 0, which means there is no limit
+        [max_response_series: <int> | default = 0]
 
         # query_backend_after controls where the query-frontend searches for traces.
         # Time ranges older than query_backend_after will be searched in the backend/object storage only.
@@ -1701,7 +1702,7 @@ overrides:
       # Per-user compaction window. If this value is set to 0 (default),
       # then block_retention in the compactor configuration is used.
       [compaction_window: <duration> | default = 0s]
-      # Allow compaction to be deactivated on a per-tenant basis. Default value
+      # Allow compaction and retention to be deactivated on a per-tenant basis. Default value
       # is false (compaction active). Useful to perform operations on the backend
       # that require compaction to be disabled for a period of time.
       [compaction_disabled: <bool> | default = false]

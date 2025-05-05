@@ -350,7 +350,6 @@ query_frontend:
         query_backend_after: 30m0s
         interval: 5m0s
         max_exemplars: 100
-        max_response_series: 1000
     multi_tenant_queries_enabled: true
     response_consumers: 10
     weights:
@@ -997,6 +996,7 @@ backend_scheduler:
                 min_period: 100ms
                 max_period: 10s
                 max_retries: 0
+    job_timeout: 15s
 backend_scheduler_client:
     grpc_client_config:
         max_recv_msg_size: 104857600
