@@ -76,7 +76,7 @@ func searchRunner(t *testing.T, _ *tempopb.Trace, wantMeta *tempopb.TraceSearchM
 
 	for _, req := range searchesThatMatch {
 		res, err := r.Search(ctx, meta, req, common.DefaultSearchOptions())
-		if errors.Is(err, common.ErrUnsupported) {
+		if errors.Is(err, util.ErrUnsupported) {
 			return
 		}
 		require.NoError(t, err, "search request: %+v", req)
@@ -113,7 +113,7 @@ func traceQLRunner(t *testing.T, _ *tempopb.Trace, wantMeta *tempopb.TraceSearch
 		})
 
 		res, err := e.ExecuteSearch(ctx, req, fetcher)
-		if errors.Is(err, common.ErrUnsupported) {
+		if errors.Is(err, util.ErrUnsupported) {
 			continue
 		}
 
@@ -256,6 +256,7 @@ func advancedTraceQLRunner(t *testing.T, wantTr *tempopb.Trace, wantMeta *tempop
 		{Query: "{} | select(resource.missing) | { !(resource.missing != nil)}"},
 		// search by traceID
 		{Query: fmt.Sprintf(`{trace:id="%s"}`, wantMeta.TraceID)},
+		{Query: "{ .numericString > ``}"}, // String comparison that was previously broken
 	}
 	searchesThatDontMatch := []*tempopb.SearchRequest{
 		// conditions
@@ -1050,7 +1051,7 @@ func traceQLStructural(t *testing.T, _ *tempopb.Trace, wantMeta *tempopb.TraceSe
 		})
 
 		res, err := e.ExecuteSearch(ctx, tc.req, fetcher)
-		if errors.Is(err, common.ErrUnsupported) {
+		if errors.Is(err, util.ErrUnsupported) {
 			continue
 		}
 
@@ -1082,7 +1083,7 @@ func traceQLStructural(t *testing.T, _ *tempopb.Trace, wantMeta *tempopb.TraceSe
 		})
 
 		res, err := e.ExecuteSearch(ctx, tc, fetcher)
-		if errors.Is(err, common.ErrUnsupported) {
+		if errors.Is(err, util.ErrUnsupported) {
 			continue
 		}
 		require.NoError(t, err, "search request: %+v", tc)
@@ -1253,7 +1254,7 @@ func nestedSet(t *testing.T, _ *tempopb.Trace, wantMeta *tempopb.TraceSearchMeta
 		})
 
 		res, err := e.ExecuteSearch(ctx, tc.req, fetcher)
-		if errors.Is(err, common.ErrUnsupported) {
+		if errors.Is(err, util.ErrUnsupported) {
 			continue
 		}
 
@@ -1358,7 +1359,7 @@ func traceQLExistence(t *testing.T, _ *tempopb.Trace, _ *tempopb.TraceSearchMeta
 		})
 
 		res, err := e.ExecuteSearch(ctx, tc.req, fetcher)
-		if errors.Is(err, common.ErrUnsupported) {
+		if errors.Is(err, util.ErrUnsupported) {
 			continue
 		}
 
@@ -1403,7 +1404,7 @@ func traceQLExistence(t *testing.T, _ *tempopb.Trace, _ *tempopb.TraceSearchMeta
 		})
 
 		res, err := e.ExecuteSearch(ctx, tc, fetcher)
-		if errors.Is(err, common.ErrUnsupported) {
+		if errors.Is(err, util.ErrUnsupported) {
 			continue
 		}
 		require.NoError(t, err, "search request: %+v", tc)
@@ -1552,7 +1553,7 @@ func tagValuesRunner(t *testing.T, _ *tempopb.Trace, _ *tempopb.TraceSearchMetad
 			})
 
 			err := e.ExecuteTagValues(ctx, tc.tag, tc.query, traceql.MakeCollectTagValueFunc(valueCollector.Collect), fetcher)
-			if errors.Is(err, common.ErrUnsupported) {
+			if errors.Is(err, util.ErrUnsupported) {
 				return
 			}
 			require.NoError(t, err, "autocomplete request: %+v", tc)
@@ -1599,7 +1600,7 @@ func tagNamesRunner(t *testing.T, _ *tempopb.Trace, _ *tempopb.TraceSearchMetada
 			scope: "none",
 			query: "{ resource.cluster = `MyCluster` }",
 			expected: map[string][]string{
-				"span":     {"child", "foo", "http.method", "http.status_code", "http.url", "span-dedicated.01", "span-dedicated.02"},
+				"span":     {"child", "foo", "http.method", "http.status_code", "http.url", "numericString", "span-dedicated.01", "span-dedicated.02"},
 				"resource": {"bat", "{ } ( ) = ~ ! < > & | ^", "cluster", "container", "k8s.cluster.name", "k8s.container.name", "k8s.namespace.name", "k8s.pod.name", "namespace", "pod", "res-dedicated.01", "res-dedicated.02", "service.name"},
 			},
 		},
@@ -1608,7 +1609,7 @@ func tagNamesRunner(t *testing.T, _ *tempopb.Trace, _ *tempopb.TraceSearchMetada
 			scope: "none",
 			query: "{ span.foo = `Bar` }",
 			expected: map[string][]string{
-				"span":     {"child", "parent", "{ } ( ) = ~ ! < > & | ^", "foo", "http.method", "http.status_code", "http.url", "span-dedicated.01", "span-dedicated.02"},
+				"span":     {"child", "parent", "{ } ( ) = ~ ! < > & | ^", "foo", "http.method", "http.status_code", "http.url", "numericString", "span-dedicated.01", "span-dedicated.02"},
 				"resource": {"bat", "{ } ( ) = ~ ! < > & | ^", "cluster", "container", "k8s.cluster.name", "k8s.container.name", "k8s.namespace.name", "k8s.pod.name", "namespace", "pod", "res-dedicated.01", "res-dedicated.02", "service.name"},
 			},
 		},
@@ -1625,7 +1626,7 @@ func tagNamesRunner(t *testing.T, _ *tempopb.Trace, _ *tempopb.TraceSearchMetada
 			err := e.ExecuteTagNames(ctx, traceql.AttributeScopeFromString(tc.scope), tc.query, func(tag string, scope traceql.AttributeScope) bool {
 				return valueCollector.Collect(scope.String(), tag)
 			}, fetcher)
-			if errors.Is(err, common.ErrUnsupported) {
+			if errors.Is(err, util.ErrUnsupported) {
 				return
 			}
 			require.NoError(t, err, "autocomplete request: %+v", tc)
@@ -1729,7 +1730,7 @@ func traceQLDuration(t *testing.T, _ *tempopb.Trace, wantMeta *tempopb.TraceSear
 		})
 
 		res, err := e.ExecuteSearch(ctx, req, fetcher)
-		if errors.Is(err, common.ErrUnsupported) {
+		if errors.Is(err, util.ErrUnsupported) {
 			continue
 		}
 
@@ -2048,7 +2049,7 @@ func runEventLinkInstrumentationSearchTest(t *testing.T, blockVersion string) {
 		})
 
 		res, err := e.ExecuteSearch(ctx, req, fetcher)
-		if errors.Is(err, common.ErrUnsupported) {
+		if errors.Is(err, util.ErrUnsupported) {
 			continue
 		}
 
@@ -2206,6 +2207,7 @@ func makeExpectedTrace(traceID []byte) (
 									boolKV("child"),
 									stringKV("span-dedicated.01", "span-1a"),
 									stringKV("span-dedicated.02", "span-2a"),
+									stringKV("numericString", "123"),
 								},
 								Events: []*v1.Span_Event{
 									{

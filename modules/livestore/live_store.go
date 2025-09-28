@@ -9,7 +9,6 @@ import (
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/google/uuid"
-	"github.com/grafana/dskit/backoff"
 	"github.com/grafana/dskit/kv"
 	"github.com/grafana/dskit/ring"
 	"github.com/grafana/dskit/services"
@@ -229,6 +228,13 @@ func (s *LiveStore) starting(ctx context.Context) error {
 		return fmt.Errorf("failed to reload blocks from wal: %w", err)
 	}
 
+	for _, inst := range s.getInstances() {
+		err = inst.deleteOldBlocks()
+		if err != nil {
+			level.Warn(s.logger).Log("msg", "failed to delete old blocks", "err", err, "tenant", inst.tenantID)
+		}
+	}
+
 	err = services.StartAndAwaitRunning(ctx, s.ingestPartitionLifecycler)
 	if err != nil {
 		return fmt.Errorf("failed to start partition lifecycler: %w", err)
@@ -248,25 +254,12 @@ func (s *LiveStore) starting(ctx context.Context) error {
 		return fmt.Errorf("failed to create kafka reader client: %w", err)
 	}
 
-	boff := backoff.New(ctx, backoff.Config{
-		MinBackoff: 100 * time.Millisecond,
-		MaxBackoff: time.Minute, // If there is a network hiccup, we prefer to wait longer retrying, than fail the service.
-		MaxRetries: 10,
-	})
-
-	for boff.Ongoing() {
-		err := s.client.Ping(ctx)
-		if err == nil {
-			break
-		}
-		level.Warn(s.logger).Log("msg", "ping kafka; will retry", "err", err)
-		boff.Wait()
-	}
-	if err := boff.ErrCause(); err != nil {
-		return fmt.Errorf("failed to ping kafka: %w", err)
+	err = ingest.WaitForKafkaBroker(ctx, s.client, s.logger)
+	if err != nil {
+		return fmt.Errorf("failed to start livestore: %w", err)
 	}
 
-	s.reader, err = NewPartitionReaderForPusher(s.client, s.ingestPartitionID, s.cfg.IngestConfig.Kafka, s.consume, s.logger, s.reg)
+	s.reader, err = NewPartitionReaderForPusher(s.client, s.ingestPartitionID, s.cfg.IngestConfig.Kafka, s.cfg.CommitInterval, s.consume, s.logger, s.reg)
 	if err != nil {
 		return fmt.Errorf("failed to create partition reader: %w", err)
 	}
@@ -305,10 +298,12 @@ func (s *LiveStore) stopping(error) error {
 		return err
 	}
 
-	s.stopAllBackgroundProcesses()
-
 	// Flush all data to disk
 	s.cutAllInstancesToWal()
+
+	if s.cfg.holdAllBackgroundProcesses { // nothing to do
+		return nil
+	}
 
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
@@ -316,14 +311,7 @@ func (s *LiveStore) stopping(error) error {
 	timeout := time.NewTimer(s.cfg.InstanceCleanupPeriod)
 	defer timeout.Stop()
 
-	for !s.completeQueues.IsEmpty() {
-		select {
-		case <-ticker.C:
-		case <-timeout.C:
-			level.Error(s.logger).Log("msg", "flush remaining blocks timed out")
-			return nil // shutdown timeout reached
-		}
-	}
+	s.stopAllBackgroundProcesses()
 
 	return nil
 }
@@ -366,7 +354,7 @@ func (s *LiveStore) consume(ctx context.Context, rs recordIter, now time.Time) (
 		}
 
 		// Push data to tenant instance
-		inst.pushBytes(record.Timestamp, pushReq)
+		inst.pushBytes(ctx, record.Timestamp, pushReq)
 
 		metricRecordsProcessed.WithLabelValues(tenant).Inc()
 		recordCount++
@@ -451,7 +439,7 @@ func (s *LiveStore) cutOneInstanceToWal(inst *instance, immediate bool) {
 
 	// If head block is cut, enqueue complete operation
 	if blockID != uuid.Nil {
-		err = s.enqueueCompleteOp(inst.tenantID, blockID)
+		err = s.enqueueCompleteOp(inst.tenantID, blockID, false)
 		if err != nil {
 			level.Error(s.logger).Log("msg", "failed to enqueue complete operation", "tenant", inst.tenantID, "err", err)
 			return

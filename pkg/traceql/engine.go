@@ -114,8 +114,15 @@ func (e *Engine) ExecuteSearch(ctx context.Context, searchReq *tempopb.SearchReq
 
 	fetchSpansResponse, err := spanSetFetcher.Fetch(ctx, *fetchSpansRequest)
 	if err != nil {
+		if errors.Is(err, util.ErrUnsupported) {
+			return &tempopb.SearchResponse{
+				Traces:  nil,
+				Metrics: &tempopb.SearchMetrics{},
+			}, nil
+		}
 		return nil, err
 	}
+
 	iterator := fetchSpansResponse.Results
 	defer iterator.Close()
 
@@ -224,7 +231,9 @@ func (e *Engine) ExecuteTagNames(
 		Scope:      scope,
 	}
 
-	span.SetAttributes(attribute.String("pipeline", rootExpr.Pipeline.String()))
+	if rootExpr != nil {
+		span.SetAttributes(attribute.String("pipeline", rootExpr.Pipeline.String()))
+	}
 	span.SetAttributes(attribute.String("autocompleteReq", fmt.Sprint(autocompleteReq)))
 
 	return fetcher.Fetch(ctx, autocompleteReq, cb)

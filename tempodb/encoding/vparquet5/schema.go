@@ -2,7 +2,6 @@ package vparquet5
 
 import (
 	"bytes"
-	"time"
 
 	"github.com/golang/protobuf/jsonpb" //nolint:all //deprecated
 	"github.com/parquet-go/parquet-go"
@@ -11,7 +10,6 @@ import (
 	v1 "github.com/grafana/tempo/pkg/tempopb/common/v1"
 	v1_resource "github.com/grafana/tempo/pkg/tempopb/resource/v1"
 	v1_trace "github.com/grafana/tempo/pkg/tempopb/trace/v1"
-	"github.com/grafana/tempo/pkg/traceql"
 	"github.com/grafana/tempo/pkg/util"
 	"github.com/grafana/tempo/tempodb/backend"
 	"github.com/grafana/tempo/tempodb/encoding/common"
@@ -84,15 +82,6 @@ const (
 	roundingEnd   = uint64(0xF000000000000000)
 )
 
-func roundSpanStartTime(nanos uint64, precisionSeconds int) uint32 {
-	// For test data.
-	if nanos == 0 {
-		return 0
-	}
-
-	return uint32(traceql.IntervalOf(nanos, roundingStart, roundingEnd, uint64(time.Duration(precisionSeconds)*time.Second)))
-}
-
 var (
 	jsonMarshaler = new(jsonpb.Marshaler)
 
@@ -161,6 +150,11 @@ type DedicatedAttributes struct {
 	String08 *string `parquet:",snappy,optional,dict"`
 	String09 *string `parquet:",snappy,optional,dict"`
 	String10 *string `parquet:",snappy,optional,dict"`
+	Int01    *int64  `parquet:",snappy,optional"`
+	Int02    *int64  `parquet:",snappy,optional"`
+	Int03    *int64  `parquet:",snappy,optional"`
+	Int04    *int64  `parquet:",snappy,optional"`
+	Int05    *int64  `parquet:",snappy,optional"`
 }
 
 type Event struct {
@@ -473,7 +467,22 @@ func traceToParquetWithMapping(id common.ID, tr *tempopb.Trace, ot *Trace, dedic
 				if s.EndTimeUnixNano > traceEnd {
 					traceEnd = s.EndTimeUnixNano
 				}
-				if len(s.ParentSpanId) == 0 {
+				var hasChildOfLink bool
+				for _, spanLink := range s.Links {
+					if bytes.Equal(s.TraceId, spanLink.TraceId) {
+						for _, attr := range spanLink.GetAttributes() {
+							if attr.Key == "opentracing.ref_type" && attr.GetValue().GetStringValue() == "child_of" {
+								hasChildOfLink = true
+								break
+							}
+						}
+						if hasChildOfLink {
+							break
+						}
+					}
+				}
+
+				if len(s.ParentSpanId) == 0 && !hasChildOfLink {
 					rootSpan = s
 					rootBatch = b
 				}
@@ -502,10 +511,17 @@ func traceToParquetWithMapping(id common.ID, tr *tempopb.Trace, ot *Trace, dedic
 					ss.StatusMessage = ""
 				}
 				ss.StartTimeUnixNano = s.StartTimeUnixNano
-				ss.StartTimeRounded15 = roundSpanStartTime(s.StartTimeUnixNano, 15)
-				ss.StartTimeRounded60 = roundSpanStartTime(s.StartTimeUnixNano, 60)
-				ss.StartTimeRounded300 = roundSpanStartTime(s.StartTimeUnixNano, 300)
-				ss.StartTimeRounded3600 = roundSpanStartTime(s.StartTimeUnixNano, 3600)
+				if s.StartTimeUnixNano == 0 {
+					ss.StartTimeRounded15 = 0
+					ss.StartTimeRounded60 = 0
+					ss.StartTimeRounded300 = 0
+					ss.StartTimeRounded3600 = 0
+				} else {
+					ss.StartTimeRounded15 = uint32(intervalMapper15Seconds.Interval(s.StartTimeUnixNano))
+					ss.StartTimeRounded60 = uint32(intervalMapper60Seconds.Interval(s.StartTimeUnixNano))
+					ss.StartTimeRounded300 = uint32(intervalMapper300Seconds.Interval(s.StartTimeUnixNano))
+					ss.StartTimeRounded3600 = uint32(intervalMapper3600Seconds.Interval(s.StartTimeUnixNano))
+				}
 				ss.DurationNano = s.EndTimeUnixNano - s.StartTimeUnixNano
 				ss.DroppedAttributesCount = int32(s.DroppedAttributesCount)
 				ss.DroppedEventsCount = int32(s.DroppedEventsCount)
@@ -806,7 +822,7 @@ func ParquetTraceToTempopbTrace(meta *backend.BlockMeta, parquetTrace *Trace) *t
 		}
 
 		// dynamically assigned dedicated resource attribute columns
-		dedicatedResourceAttributes.forEach(func(attr string, col dedicatedColumn) {
+		for attr, col := range dedicatedResourceAttributes.items() {
 			val := col.readValue(&rs.Resource.DedicatedAttributes)
 			if val != nil {
 				protoBatch.Resource.Attributes = append(protoBatch.Resource.Attributes, &v1.KeyValue{
@@ -814,7 +830,7 @@ func ParquetTraceToTempopbTrace(meta *backend.BlockMeta, parquetTrace *Trace) *t
 					Value: val,
 				})
 			}
-		})
+		}
 
 		// known resource attributes
 		if rs.Resource.ServiceName != "" {
@@ -886,7 +902,7 @@ func ParquetTraceToTempopbTrace(meta *backend.BlockMeta, parquetTrace *Trace) *t
 				protoSpan.Links = parquetToProtoLinks(span.Links)
 
 				// dynamically assigned dedicated resource attribute columns
-				dedicatedSpanAttributes.forEach(func(attr string, col dedicatedColumn) {
+				for attr, col := range dedicatedSpanAttributes.items() {
 					val := col.readValue(&span.DedicatedAttributes)
 					if val != nil {
 						protoSpan.Attributes = append(protoSpan.Attributes, &v1.KeyValue{
@@ -894,7 +910,7 @@ func ParquetTraceToTempopbTrace(meta *backend.BlockMeta, parquetTrace *Trace) *t
 							Value: val,
 						})
 					}
-				})
+				}
 
 				// known span attributes
 				if span.HttpMethod != nil {

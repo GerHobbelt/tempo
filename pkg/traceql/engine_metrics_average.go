@@ -33,17 +33,13 @@ func newAverageOverTimeMetricsAggregator(attr Attribute, by []Attribute) *averag
 }
 
 func (a *averageOverTimeAggregator) init(q *tempopb.QueryRangeRequest, mode AggregateMode) {
+	intervalMapper := NewIntervalMapperFromReq(q)
+
 	a.seriesAgg = &averageOverTimeSeriesAggregator{
-		weightedAverageSeries: make(map[string]*averageSeries),
-		len:                   IntervalCount(q.Start, q.End, q.Step),
-		start:                 q.Start,
-		end:                   q.End,
-		step:                  q.Step,
-		exemplarBuckets: newBucketSet(
-			maxExemplars,
-			alignStart(q.Start, q.End, q.Step),
-			alignEnd(q.Start, q.End, q.Step),
-		),
+		weightedAverageSeries: make(map[SeriesMapKey]*averageSeries),
+		len:                   intervalMapper.IntervalCount(),
+		intervalMapper:        intervalMapper,
+		exemplarBuckets:       newExemplarBucketSet(maxExemplars, q.Start, q.End, q.Step),
 	}
 
 	if mode == AggregateModeRaw {
@@ -99,8 +95,11 @@ func (a *averageOverTimeAggregator) result(multiplier float64) SeriesSet {
 	ss := a.seriesAgg.Results()
 	if a.mode == AggregateModeFinal {
 		for i := range ss {
-			if strings.Contains(i, internalLabelMetaType) {
-				delete(ss, i)
+			for _, l := range i {
+				if l.Name == internalLabelMetaType {
+					delete(ss, i)
+					break
+				}
 			}
 		}
 	}
@@ -163,10 +162,10 @@ func (a *averageOverTimeAggregator) String() string {
 }
 
 type averageOverTimeSeriesAggregator struct {
-	weightedAverageSeries map[string]*averageSeries
+	weightedAverageSeries map[SeriesMapKey]*averageSeries
 	len                   int
-	start, end, step      uint64
-	exemplarBuckets       *bucketSet
+	intervalMapper        IntervalMapper
+	exemplarBuckets       bucketSet
 }
 
 type averageValue struct {
@@ -279,41 +278,56 @@ var (
 
 func (b *averageOverTimeSeriesAggregator) Combine(in []*tempopb.TimeSeries) {
 	// We traverse the TimeSeries to initialize new TimeSeries and map the counter series with the position in the `in` array
-	countPosMapper := make(map[string]int, len(in)/2)
+	countPosMapper := make(map[SeriesMapKey]int, len(in)/2)
 	for i, ts := range in {
-		_, ok := b.weightedAverageSeries[ts.PromLabels]
-		if strings.Contains(ts.PromLabels, internalLabelMetaType) {
+		labels := getLabels(ts.Labels, "")
+		key := labels.MapKey()
+
+		_, ok := b.weightedAverageSeries[key]
+
+		hasMetaType := false
+		for _, l := range ts.Labels {
+			if l.Key == internalLabelMetaType {
+				hasMetaType = true
+				break
+			}
+		}
+
+		if hasMetaType {
 			// Label series without the count metatype, this will match with its average series
-			avgSeriesPromLabel := getLabels(ts.Labels, internalLabelMetaType).String()
+			key := getLabels(ts.Labels, internalLabelMetaType).MapKey()
 			// mapping of the position of the count series in the time series array
-			countPosMapper[avgSeriesPromLabel] = i
+			countPosMapper[key] = i
 		} else if !ok {
-			promLabels := getLabels(ts.Labels, "")
-			s := newAverageSeries(b.len, len(ts.Exemplars), promLabels)
-			b.weightedAverageSeries[ts.PromLabels] = &s
+			lbls := getLabels(ts.Labels, "")
+			s := newAverageSeries(b.len, len(ts.Exemplars), lbls)
+			b.weightedAverageSeries[key] = &s
 		}
 	}
 	for _, ts := range in {
-		existing, ok := b.weightedAverageSeries[ts.PromLabels]
+		labels := getLabels(ts.Labels, "")
+		key := labels.MapKey()
+
+		existing, ok := b.weightedAverageSeries[key]
 		if !ok {
 			// This is a counter series, we can skip it
 			continue
 		}
-		countIndex, ok := countPosMapper[ts.PromLabels]
+		countIndex, ok := countPosMapper[key]
 		if !ok {
 			// The count series might have been truncated, skip this value
 			continue
 		}
 		for i, sample := range ts.Samples {
-			pos := IntervalOfMs(sample.TimestampMs, b.start, b.end, b.step)
-			if pos < 0 || pos >= len(b.weightedAverageSeries[ts.PromLabels].values) {
+			pos := b.intervalMapper.IntervalMs(sample.TimestampMs)
+			if pos < 0 || pos >= len(b.weightedAverageSeries[key].values) {
 				continue
 			}
 
 			incomingMean := sample.Value
 			incomingWeight := in[countIndex].Samples[i].Value
 			existing.addWeigthedMean(pos, incomingMean, incomingWeight)
-			b.aggregateExemplars(ts, b.weightedAverageSeries[ts.PromLabels])
+			b.aggregateExemplars(ts, b.weightedAverageSeries[key])
 		}
 	}
 }
@@ -364,7 +378,7 @@ func (b *averageOverTimeSeriesAggregator) Results() SeriesSet {
 	for k, v := range b.weightedAverageSeries {
 		ss[k] = v.getAvgSeries()
 		countSeries := v.getCountSeries()
-		ss[countSeries.Labels.String()] = countSeries
+		ss[countSeries.Labels.MapKey()] = countSeries
 	}
 	return ss
 }
@@ -376,7 +390,7 @@ func (b *averageOverTimeSeriesAggregator) Length() int {
 // Accumulated results of average over time
 type avgOverTimeSeries[S StaticVals] struct {
 	average         averageSeries
-	exemplarBuckets *bucketSet
+	exemplarBuckets bucketSet
 	vals            S
 	initialized     bool
 }
@@ -385,12 +399,11 @@ type avgOverTimeSeries[S StaticVals] struct {
 // First aggregation layer
 type avgOverTimeSpanAggregator[F FastStatic, S StaticVals] struct {
 	// Config
-	by              []Attribute   // Original attributes: .foo
-	byLookups       [][]Attribute // Lookups: span.foo resource.foo
-	getSpanAttValue func(s Span) float64
-	start           uint64
-	end             uint64
-	step            uint64
+	by               []Attribute   // Original attributes: .foo
+	byLookups        [][]Attribute // Lookups: span.foo resource.foo
+	getSpanAttValue  func(s Span) float64
+	intervalMapper   IntervalMapper
+	start, end, step uint64
 
 	// Data
 	series     map[F]avgOverTimeSeries[S]
@@ -455,6 +468,7 @@ func newAvgAggregator[F FastStatic, S StaticVals](attr Attribute, by []Attribute
 		getSpanAttValue: fn,
 		by:              by,
 		byLookups:       lookups,
+		intervalMapper:  NewIntervalMapper(start, end, step),
 		start:           start,
 		end:             end,
 		step:            step,
@@ -462,7 +476,7 @@ func newAvgAggregator[F FastStatic, S StaticVals](attr Attribute, by []Attribute
 }
 
 func (g *avgOverTimeSpanAggregator[F, S]) Observe(span Span) {
-	interval := IntervalOf(span.StartTimeUnixNanos(), g.start, g.end, g.step)
+	interval := g.intervalMapper.Interval(span.StartTimeUnixNanos())
 	if interval == -1 {
 		return
 	}
@@ -503,11 +517,11 @@ func (g *avgOverTimeSpanAggregator[F, S]) Length() int {
 	return len(g.series)
 }
 
-func (g *avgOverTimeSpanAggregator[F, S]) labelsFor(vals S) (Labels, string) {
+func (g *avgOverTimeSpanAggregator[F, S]) labelsFor(vals S) (Labels, SeriesMapKey) {
 	if g.by == nil {
 		serieLabel := make(Labels, 1, 2)
 		serieLabel[0] = Label{labels.MetricName, NewStaticString(metricsAggregateAvgOverTime.String())}
-		return serieLabel, serieLabel.String()
+		return serieLabel, serieLabel.MapKey()
 	}
 	labels := make(Labels, 0, len(g.by)+1)
 	for i := range g.by {
@@ -522,14 +536,14 @@ func (g *avgOverTimeSpanAggregator[F, S]) labelsFor(vals S) (Labels, string) {
 		labels = append(labels, Label{g.by[0].String(), NewStaticNil()})
 	}
 
-	return labels, labels.String()
+	return labels, labels.MapKey()
 }
 
 func (g *avgOverTimeSpanAggregator[F, S]) Series() SeriesSet {
 	ss := SeriesSet{}
 
 	for _, s := range g.series {
-		labels, promLabelsAvg := g.labelsFor(s.vals)
+		labels, key := g.labelsFor(s.vals)
 		s.average.labels = labels
 		// Average series
 		averageSeries := s.average.getAvgSeries()
@@ -537,8 +551,8 @@ func (g *avgOverTimeSpanAggregator[F, S]) Series() SeriesSet {
 		// Count series
 		countSeries := s.average.getCountSeries()
 
-		ss[promLabelsAvg] = averageSeries
-		ss[countSeries.Labels.String()] = countSeries
+		ss[key] = averageSeries
+		ss[countSeries.Labels.MapKey()] = countSeries
 	}
 
 	return ss
@@ -561,16 +575,12 @@ func (g *avgOverTimeSpanAggregator[F, S]) getSeries(span Span) avgOverTimeSeries
 
 	s, ok := g.series[g.buf.fast]
 	if !ok {
-		intervals := IntervalCount(g.start, g.end, g.step)
+		intervals := g.intervalMapper.IntervalCount()
 		s = avgOverTimeSeries[S]{
-			vals:    g.buf.vals,
-			average: newAverageSeries(intervals, maxExemplars, nil),
-			exemplarBuckets: newBucketSet(
-				maxExemplars,
-				alignStart(g.start, g.end, g.step),
-				alignEnd(g.start, g.end, g.step),
-			),
-			initialized: true,
+			vals:            g.buf.vals,
+			average:         newAverageSeries(intervals, maxExemplars, nil),
+			exemplarBuckets: newExemplarBucketSet(maxExemplars, g.start, g.end, g.step),
+			initialized:     true,
 		}
 		g.series[g.buf.fast] = s
 	}

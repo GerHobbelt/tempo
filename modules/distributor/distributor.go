@@ -85,7 +85,12 @@ var (
 	metricBytesIngested = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "tempo",
 		Name:      "distributor_bytes_received_total",
-		Help:      "The total number of proto bytes received per tenant",
+		Help:      "The total number of proto bytes received per tenant, after limits",
+	}, []string{"tenant"})
+	metricIngressBytes = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "tempo",
+		Name:      "distributor_ingress_bytes_total",
+		Help:      "The total number of bytes received per tenant, before limits",
 	}, []string{"tenant"})
 	metricTracesPerBatch = promauto.NewHistogram(prometheus.HistogramOpts{
 		Namespace:                       "tempo",
@@ -129,12 +134,6 @@ var (
 		Name:      "kafka_write_bytes_total",
 		Help:      "The total number of bytes written to kafka",
 	}, []string{"partition"})
-	metricKafkaAppends = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "tempo",
-		Subsystem: "distributor",
-		Name:      "kafka_appends_total",
-		Help:      "The total number of appends sent to kafka",
-	}, []string{"partition", "status"})
 
 	statBytesReceived = usagestats.NewCounter("distributor_bytes_received")
 	statSpansReceived = usagestats.NewCounter("distributor_spans_received")
@@ -418,6 +417,7 @@ func (d *Distributor) PushTraces(ctx context.Context, traces ptrace.Traces) (*te
 		return nil, err
 	}
 	defer d.padWithArtificialDelay(reqStart, userID)
+	metricIngressBytes.WithLabelValues(userID).Add(float64(size))
 
 	if spanCount == 0 {
 		return &tempopb.PushResponse{}, nil
@@ -674,7 +674,6 @@ func (d *Distributor) sendToKafka(ctx context.Context, userID string, keys []uin
 		for _, result := range produceResults {
 			if result.Err != nil {
 				_ = level.Error(d.logger).Log("msg", "failed to write to kafka", "err", result.Err, "tenant", userID)
-				metricKafkaAppends.WithLabelValues(partitionLabel, "fail").Inc()
 			} else {
 				count++
 				sizeBytes += len(result.Record.Value)
@@ -683,7 +682,6 @@ func (d *Distributor) sendToKafka(ctx context.Context, userID string, keys []uin
 
 		if count > 0 {
 			metricKafkaWriteBytesTotal.WithLabelValues(partitionLabel).Add(float64(sizeBytes))
-			metricKafkaAppends.WithLabelValues(partitionLabel, "success").Add(float64(count))
 		}
 
 		_ = level.Debug(d.logger).Log("msg", "kafka write success stats", "count", count, "size_bytes", sizeBytes, "partition", partitionLabel)
@@ -789,7 +787,7 @@ func requestsByTraceID(batches []*v1.ResourceSpans, userID string, spanCount, ma
 				}
 
 				// increase span count for trace
-				existingTrace.spanCount = existingTrace.spanCount + 1
+				existingTrace.spanCount++
 
 				// Count spans with timestamps in the future
 				if end > currentTime {

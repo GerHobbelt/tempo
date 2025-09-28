@@ -20,6 +20,10 @@ type Config struct {
 	PartitionRing ingester.PartitionRingConfig `yaml:"partition_ring" category:"experimental"`
 	Metrics       MetricsConfig                `yaml:"metrics"`
 
+	// CommitInterval configures how often the partition reader commits to kafka
+	// 0s means synchronous commits
+	CommitInterval time.Duration `yaml:"commit_interval"`
+
 	// This config is dynamically injected because defined outside the ingester config.
 	IngestConfig ingest.Config `yaml:"-"`
 
@@ -35,6 +39,7 @@ type Config struct {
 	InstanceCleanupPeriod time.Duration `yaml:"flush_op_timeout"`
 	MaxTraceLive          time.Duration `yaml:"max_trace_live"`
 	MaxTraceIdle          time.Duration `yaml:"max_trace_idle"`
+	MaxLiveTracesBytes    uint64        `yaml:"max_live_traces_bytes"`
 	MaxBlockDuration      time.Duration `yaml:"max_block_duration"`
 	MaxBlockBytes         uint64        `yaml:"max_block_bytes"`
 
@@ -70,8 +75,11 @@ func (cfg *Config) RegisterFlagsAndApplyDefaults(prefix string, f *flag.FlagSet)
 	cfg.InstanceCleanupPeriod = 5 * time.Minute
 	cfg.MaxTraceLive = 30 * time.Second
 	cfg.MaxTraceIdle = 5 * time.Second
+	cfg.MaxLiveTracesBytes = 250_000_000 // 250MB
 	cfg.MaxBlockDuration = 30 * time.Minute
 	cfg.MaxBlockBytes = 500 * 1024 * 1024
+
+	cfg.CommitInterval = 5 * time.Second
 
 	// Initialize block config with defaults
 	cfg.BlockConfig.RegisterFlagsAndApplyDefaults(prefix+".block", f)

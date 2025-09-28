@@ -50,85 +50,6 @@ func DefaultQueryRangeStep(start, end uint64) uint64 {
 	return uint64(interval.Nanoseconds())
 }
 
-// IntervalCount is the number of intervals in the range with step.
-func IntervalCount(start, end, step uint64) int {
-	if isInstant(start, end, step) { // always 1 interval
-		return 1
-	}
-	start = alignStart(start, end, step)
-	end = alignEnd(start, end, step)
-
-	intervals := (end - start) / step
-	return int(intervals)
-}
-
-// TimestampOf the given interval with the start and step.
-func TimestampOf(interval, start, end, step uint64) uint64 {
-	start = alignStart(start, end, step)
-	// start as initial offset plus interval's offset
-	return start + (interval+1)*step
-}
-
-// IntervalOf the given timestamp within the range and step.
-// First interval is (start; start+step]
-// Last interval is (end-step; end]
-// The first interval's left border is limited to 0
-func IntervalOf(ts, start, end, step uint64) int {
-	if isInstant(start, end, step) { // always one interval
-		if !isTsValidForInstant(ts, start, end) {
-			return -1
-		}
-		return 0
-	}
-
-	start = alignStart(start, end, step)
-	end = alignEnd(start, end, step)
-
-	if !isTsValidForInterval(ts, start, end, step) {
-		return -1
-	}
-	if ts <= start { // to avoid overflow
-		return 0 // if pass validation and less than start, always first interval
-	}
-
-	offset := ts - start
-	// Calculate which interval the timestamp falls into
-	// Since intervals are right-closed: (start; start+step], (start+step; start+2*step], etc.
-	// we need to handle the case where ts is exactly on a step boundary
-	interval := offset / step
-	if interval*step == offset { // the same as offset % step == 0
-		// ts is exactly on a step boundary, so it belongs to the previous interval
-		interval--
-	}
-	return int(interval)
-}
-
-// isTsValidForInterval returns true if the timestamp is valid for the given range and step.
-func isTsValidForInterval(ts, start, end, step uint64) bool {
-	return ts > start && ts <= end && end != start && step != 0
-}
-
-// isTsValidForInstant returns true if the timestamp is valid for the given range for instant query.
-func isTsValidForInstant(ts, start, end uint64) bool {
-	return ts >= start && ts <= end && end != start
-}
-
-// IntervalOfMs is the same as IntervalOf except the input and calculations are in unix milliseconds.
-func IntervalOfMs(tsmills int64, start, end, step uint64) int {
-	ts := uint64(time.Duration(tsmills) * time.Millisecond)
-	instant := isInstant(start, end, step)
-	start -= start % uint64(time.Millisecond)
-	end -= end % uint64(time.Millisecond)
-
-	if instant {
-		if !isTsValidForInstant(ts, start, end) {
-			return -1
-		}
-		return 0
-	}
-	return IntervalOf(ts, start, end, step)
-}
-
 // TrimToBlockOverlap returns the overlap between the given time range and block.  It is used to
 // split a block to only the portion overlapping, or when the entire block is within range then
 // opportunistically remove time slots that are known to be unused.
@@ -151,6 +72,11 @@ func TrimToBlockOverlap(start, end, step uint64, blockStart, blockEnd time.Time)
 	// they will get trimmed back down.
 	start2 = alignStart(start2, end2, step)
 	end2 = alignEnd(start2, end2, step)
+	// if wasn't instant and may become instant,
+	// add one nanosecond. This usually happens to small blocks.
+	if !wasInstant && isInstant(start2, end2, step) {
+		end2++
+	}
 
 	// Now trim to the overlap preserving nanosecond precision for
 	// when we split a block.
@@ -168,7 +94,7 @@ func TrimToBlockOverlap(start, end, step uint64, blockStart, blockEnd time.Time)
 // TrimToBefore shortens the query window to only include before the given time.
 // Request must be in unix nanoseconds already.
 func TrimToBefore(req *tempopb.QueryRangeRequest, before time.Time) {
-	wasInstant := IsInstant(*req)
+	wasInstant := IsInstant(req)
 	beforeNs := uint64(before.UnixNano())
 
 	req.Start = min(req.Start, beforeNs)
@@ -183,7 +109,7 @@ func TrimToBefore(req *tempopb.QueryRangeRequest, before time.Time) {
 // TrimToAfter shortens the query window to only include after the given time.
 // Request must be in unix nanoseconds already.
 func TrimToAfter(req *tempopb.QueryRangeRequest, before time.Time) {
-	wasInstant := IsInstant(*req)
+	wasInstant := IsInstant(req)
 	beforeNs := uint64(before.UnixNano())
 
 	req.Start = max(req.Start, beforeNs)
@@ -195,7 +121,10 @@ func TrimToAfter(req *tempopb.QueryRangeRequest, before time.Time) {
 	}
 }
 
-func IsInstant(req tempopb.QueryRangeRequest) bool {
+func IsInstant(req *tempopb.QueryRangeRequest) bool {
+	if req == nil {
+		return false
+	}
 	return isInstant(req.Start, req.End, req.Step)
 }
 
@@ -208,7 +137,7 @@ func isInstant(start, end, step uint64) bool {
 // Without alignment each refresh is shifted by seconds or even milliseconds and the time series
 // calculations are sublty different each time. It's not wrong, but less preferred behavior.
 func AlignRequest(req *tempopb.QueryRangeRequest) {
-	if IsInstant(*req) {
+	if IsInstant(req) {
 		return
 	}
 
@@ -265,6 +194,43 @@ func LabelsFromProto(ls []v1.KeyValue) Labels {
 	return out
 }
 
+func LabelsFromArgs(args ...any) Labels {
+	if len(args)%2 != 0 {
+		panic("LabelsFromArgs must be called with an even number of arguments")
+	}
+
+	out := make(Labels, 0, len(args)/2)
+
+	for i := 0; i < len(args); i += 2 {
+		name := args[i].(string)
+		var val Static
+		switch arg := args[i+1].(type) {
+		case string:
+			val = NewStaticString(arg)
+		case int:
+			val = NewStaticInt(arg)
+		case float64:
+			val = NewStaticFloat(arg)
+		default:
+			panic(fmt.Sprintf("LabelsFromArgs type not yet supported: %T", arg))
+
+		}
+
+		out = append(out, Label{Name: name, Value: val})
+	}
+
+	return out
+}
+
+func (ls Labels) Has(name string) bool {
+	for _, l := range ls {
+		if l.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // String returns the prometheus-formatted version of the labels. Which is downcasting
 // the typed TraceQL values to strings, with some special casing.
 func (ls Labels) String() string {
@@ -283,6 +249,8 @@ func (ls Labels) String() string {
 			} else {
 				promValue = s
 			}
+		case l.Value.Type == TypeInt:
+			promValue = "int(" + l.Value.EncodeToString(false) + ")"
 		default:
 			promValue = l.Value.EncodeToString(false)
 		}
@@ -290,6 +258,14 @@ func (ls Labels) String() string {
 	}
 
 	return promLabels.Labels().String()
+}
+
+func (ls Labels) MapKey() SeriesMapKey {
+	key := SeriesMapKey{}
+	for i := range ls {
+		key[i] = SeriesMapLabel{Name: ls[i].Name, Value: ls[i].Value.MapKey()}
+	}
+	return key
 }
 
 type Exemplar struct {
@@ -304,14 +280,22 @@ type TimeSeries struct {
 	Exemplars []Exemplar
 }
 
+type SeriesMapLabel struct {
+	Name  string
+	Value StaticMapKey
+}
+
+type SeriesMapKey [maxGroupBys]SeriesMapLabel
+
 // SeriesSet is a set of unique timeseries. They are mapped by the "Prometheus"-style
 // text description: {x="a",y="b"} for convenience.
-type SeriesSet map[string]TimeSeries
+type SeriesSet map[SeriesMapKey]TimeSeries
 
 func (set SeriesSet) ToProto(req *tempopb.QueryRangeRequest) []*tempopb.TimeSeries {
+	mapper := NewIntervalMapperFromReq(req)
 	resp := make([]*tempopb.TimeSeries, 0, len(set))
 
-	for promLabels, s := range set {
+	for _, s := range set {
 		labels := make([]commonv1proto.KeyValue, 0, len(s.Labels))
 		for _, label := range s.Labels {
 			labels = append(labels,
@@ -322,21 +306,16 @@ func (set SeriesSet) ToProto(req *tempopb.QueryRangeRequest) []*tempopb.TimeSeri
 			)
 		}
 
-		start, end := req.Start, req.End
-		start = alignStart(start, end, req.Step)
-		end = alignEnd(start, end, req.Step)
-
-		intervals := IntervalCount(start, end, req.Step)
+		intervals := mapper.IntervalCount()
 		samples := make([]tempopb.Sample, 0, intervals)
 		for i, value := range s.Values {
-			ts := TimestampOf(uint64(i), req.Start, req.End, req.Step)
-
 			// todo: this loop should be able to be restructured to directly pass over
 			// the desired intervals
-			if ts < start || ts > end || math.IsNaN(value) {
+			if i >= intervals || math.IsNaN(value) {
 				continue
 			}
 
+			ts := mapper.TimestampOf(i)
 			samples = append(samples, tempopb.Sample{
 				TimestampMs: time.Unix(0, int64(ts)).UnixMilli(),
 				Value:       value,
@@ -353,7 +332,7 @@ func (set SeriesSet) ToProto(req *tempopb.QueryRangeRequest) []*tempopb.TimeSeri
 		}
 		for _, e := range s.Exemplars {
 			// skip exemplars that has NaN value
-			i := IntervalOfMs(int64(e.TimestampMs), start, end, req.Step)
+			i := mapper.IntervalMs(int64(e.TimestampMs))
 			if i < 0 || i >= len(s.Values) || math.IsNaN(s.Values[i]) { // strict bounds check
 				continue
 			}
@@ -376,10 +355,9 @@ func (set SeriesSet) ToProto(req *tempopb.QueryRangeRequest) []*tempopb.TimeSeri
 		}
 
 		ss := &tempopb.TimeSeries{
-			PromLabels: promLabels,
-			Labels:     labels,
-			Samples:    samples,
-			Exemplars:  exemplars,
+			Labels:    labels,
+			Samples:   samples,
+			Exemplars: exemplars,
 		}
 
 		resp = append(resp, ss)
@@ -497,39 +475,32 @@ func (c *OverTimeAggregator) Sample() float64 {
 
 // StepAggregator sorts spans into time slots using a step interval like 30s or 1m
 type StepAggregator struct {
-	start, end, step uint64
-	intervals        int
-	vectors          []VectorAggregator
-	exemplars        []Exemplar
-	exemplarBuckets  *bucketSet
+	intervalMapper  IntervalMapper
+	vectors         []VectorAggregator
+	exemplars       []Exemplar
+	exemplarBuckets bucketSet
 }
 
 var _ RangeAggregator = (*StepAggregator)(nil)
 
 func NewStepAggregator(start, end, step uint64, innerAgg func() VectorAggregator) *StepAggregator {
-	intervals := IntervalCount(start, end, step)
+	mapper := NewIntervalMapper(start, end, step)
+	intervals := mapper.IntervalCount()
 	vectors := make([]VectorAggregator, intervals)
 	for i := range vectors {
 		vectors[i] = innerAgg()
 	}
 
 	return &StepAggregator{
-		start:     start,
-		end:       end,
-		step:      step,
-		intervals: intervals,
-		vectors:   vectors,
-		exemplars: make([]Exemplar, 0, maxExemplars),
-		exemplarBuckets: newBucketSet(
-			maxExemplars,
-			alignStart(start, end, step),
-			alignEnd(start, end, step),
-		),
+		intervalMapper:  mapper,
+		vectors:         vectors,
+		exemplars:       make([]Exemplar, 0, maxExemplars),
+		exemplarBuckets: newExemplarBucketSet(maxExemplars, start, end, step),
 	}
 }
 
 func (s *StepAggregator) Observe(span Span) {
-	interval := IntervalOf(span.StartTimeUnixNanos(), s.start, s.end, s.step)
+	interval := s.intervalMapper.Interval(span.StartTimeUnixNanos())
 	if interval == -1 {
 		return
 	}
@@ -564,6 +535,47 @@ func (s *StepAggregator) Exemplars() []Exemplar {
 }
 
 func (s *StepAggregator) Length() int {
+	return 0
+}
+
+// InstantAggregator is similar to StepAggregator but always has only one interval.
+// It's used for instant queries where we only need a single data point.
+type InstantAggregator struct {
+	start, end uint64
+	vector     VectorAggregator
+}
+
+var _ RangeAggregator = (*InstantAggregator)(nil)
+
+func NewInstantAggregator(start, end uint64, innerAgg func() VectorAggregator) *InstantAggregator {
+	return &InstantAggregator{
+		start:  start,
+		end:    end,
+		vector: innerAgg(),
+	}
+}
+
+func (i *InstantAggregator) Observe(span Span) {
+	// if outside the range, skip
+	if ts := span.StartTimeUnixNanos(); ts < i.start || ts > i.end {
+		return
+	}
+	i.vector.Observe(span)
+}
+
+func (i *InstantAggregator) ObserveExemplar(float64, uint64, Labels) {
+	// instant query does not have exemplars, so we skip
+}
+
+func (i *InstantAggregator) Samples() []float64 {
+	return []float64{i.vector.Sample()}
+}
+
+func (i *InstantAggregator) Exemplars() []Exemplar {
+	return nil
+}
+
+func (i *InstantAggregator) Length() int {
 	return 0
 }
 
@@ -788,7 +800,7 @@ func (g *GroupingAggregator[F, S]) Length() int {
 //
 //	Ex: rate() by (x,y,z) and all nil yields:
 //	{x="nil"}
-func (g *GroupingAggregator[F, S]) labelsFor(vals S) (Labels, string) {
+func (g *GroupingAggregator[F, S]) labelsFor(vals S) (Labels, SeriesMapKey) {
 	labels := make(Labels, 0, len(g.by)+1)
 	for i := range g.by {
 		if vals[i].Type == TypeNil {
@@ -805,16 +817,16 @@ func (g *GroupingAggregator[F, S]) labelsFor(vals S) (Labels, string) {
 		labels = append(labels, Label{g.by[0].String(), NewStaticNil()})
 	}
 
-	return labels, labels.String()
+	return labels, labels.MapKey()
 }
 
 func (g *GroupingAggregator[F, S]) Series() SeriesSet {
 	ss := SeriesSet{}
 
 	for _, s := range g.series {
-		labels, promLabels := g.labelsFor(s.vals)
+		labels, key := g.labelsFor(s.vals)
 
-		ss[promLabels] = TimeSeries{
+		ss[key] = TimeSeries{
 			Labels:    labels,
 			Values:    s.agg.Samples(),
 			Exemplars: s.agg.Exemplars(),
@@ -854,10 +866,11 @@ func (u *UngroupedAggregator) Length() int {
 // fill in a placeholder metric name with the name of the aggregation.
 // rate() => {__name__=rate}
 func (u *UngroupedAggregator) Series() SeriesSet {
-	l := labels.FromStrings(labels.MetricName, u.name)
+	labels := LabelsFromArgs(labels.MetricName, u.name)
+
 	return SeriesSet{
-		l.String(): {
-			Labels:    []Label{{labels.MetricName, NewStaticString(u.name)}},
+		labels.MapKey(): {
+			Labels:    labels,
 			Values:    u.innerAgg.Samples(),
 			Exemplars: u.innerAgg.Exemplars(),
 		},
@@ -1386,15 +1399,14 @@ const (
 
 type SimpleAggregator struct {
 	ss               SeriesSet
-	exemplarBuckets  *bucketSet
-	len              int
+	exemplarBuckets  bucketSet
+	intervalMapper   IntervalMapper
 	aggregationFunc  func(existingValue float64, newValue float64) float64
 	start, end, step uint64
 	initWithNaN      bool
 }
 
 func NewSimpleCombiner(req *tempopb.QueryRangeRequest, op SimpleAggregationOp, exemplars uint32) *SimpleAggregator {
-	l := IntervalCount(req.Start, req.End, req.Step)
 	var initWithNaN bool
 	var f func(existingValue float64, newValue float64) float64
 	switch op {
@@ -1416,16 +1428,9 @@ func NewSimpleCombiner(req *tempopb.QueryRangeRequest, op SimpleAggregationOp, e
 
 	}
 	return &SimpleAggregator{
-		ss: make(SeriesSet),
-		exemplarBuckets: newBucketSet(
-			exemplars,
-			alignStart(req.Start, req.End, req.Step),
-			alignEnd(req.Start, req.End, req.Step),
-		),
-		len:             l,
-		start:           req.Start,
-		end:             req.End,
-		step:            req.Step,
+		ss:              make(SeriesSet),
+		exemplarBuckets: newExemplarBucketSet(exemplars, req.Start, req.End, req.Step),
+		intervalMapper:  NewIntervalMapperFromReq(req),
 		aggregationFunc: f,
 		initWithNaN:     initWithNaN,
 	}
@@ -1435,14 +1440,16 @@ func (b *SimpleAggregator) Combine(in []*tempopb.TimeSeries) {
 	nan := math.Float64frombits(normalNaN)
 
 	for _, ts := range in {
-		existing, ok := b.ss[ts.PromLabels]
+		// Convert proto labels to traceql labels
+		labels, _ := convertProtoLabelsToTraceQL(ts.Labels, false)
+		key := labels.MapKey()
+
+		existing, ok := b.ss[key]
 		if !ok {
-			// Convert proto labels to traceql labels
-			labels, _ := convertProtoLabelsToTraceQL(ts.Labels, false)
 
 			existing = TimeSeries{
 				Labels:    labels,
-				Values:    make([]float64, b.len),
+				Values:    make([]float64, b.intervalMapper.IntervalCount()),
 				Exemplars: make([]Exemplar, 0, len(ts.Exemplars)),
 			}
 			if b.initWithNaN {
@@ -1451,11 +1458,11 @@ func (b *SimpleAggregator) Combine(in []*tempopb.TimeSeries) {
 				}
 			}
 
-			b.ss[ts.PromLabels] = existing
+			b.ss[key] = existing
 		}
 
 		for _, sample := range ts.Samples {
-			j := IntervalOfMs(sample.TimestampMs, b.start, b.end, b.step)
+			j := b.intervalMapper.IntervalMs(sample.TimestampMs)
 			if j >= 0 && j < len(existing.Values) {
 				existing.Values[j] = b.aggregationFunc(existing.Values[j], sample.Value)
 			}
@@ -1463,7 +1470,7 @@ func (b *SimpleAggregator) Combine(in []*tempopb.TimeSeries) {
 
 		b.aggregateExemplars(ts, &existing)
 
-		b.ss[ts.PromLabels] = existing
+		b.ss[key] = existing
 	}
 }
 
@@ -1515,33 +1522,153 @@ func (h *Histogram) Record(bucket float64, count int) {
 	})
 }
 
+type IntervalMapper interface {
+	// Interval the given timestamp within the range and step.
+	Interval(ts uint64) int
+	// IntervalMs is the same as Bucket except the input and calculations are in unix milliseconds.
+	IntervalMs(ts int64) int
+	TimestampOf(interval int) uint64
+	// IntervalCount is the number of intervals in the range with step.
+	IntervalCount() int
+}
+
+func NewIntervalMapperFromReq(req *tempopb.QueryRangeRequest) IntervalMapper {
+	return NewIntervalMapper(req.Start, req.End, req.Step)
+}
+
+func NewIntervalMapper(start, end, step uint64) IntervalMapper {
+	startMs := start - start%uint64(time.Millisecond)
+	endMs := end - end%uint64(time.Millisecond)
+	if isInstant(start, end, step) {
+		return &IntervalMapperInstant{
+			start:   start,
+			end:     end,
+			startMs: startMs,
+			endMs:   endMs,
+		}
+	}
+	mapper := &IntervalMapperQueryRange{
+		start:   alignStart(start, end, step),
+		end:     alignEnd(start, end, step),
+		step:    step,
+		startMs: alignStart(startMs, endMs, step),
+		endMs:   alignEnd(startMs, endMs, step),
+	}
+	// pre-calculate intervals
+	intervals := (mapper.end - mapper.start) / mapper.step
+	mapper.intervalCount = int(intervals)
+	return mapper
+}
+
+type IntervalMapperQueryRange struct {
+	start, end, step uint64
+	startMs, endMs   uint64
+	intervalCount    int
+}
+
+func (i IntervalMapperQueryRange) Interval(ts uint64) int {
+	return i.interval(ts, i.start, i.end, i.step)
+}
+
+func (i IntervalMapperQueryRange) IntervalMs(tsmill int64) int {
+	ts := uint64(time.Duration(tsmill) * time.Millisecond)
+	// TODO: step is not truncated to milliseconds, it might be a bug
+	return i.interval(ts, i.startMs, i.endMs, i.step)
+}
+
+func (i IntervalMapperQueryRange) interval(ts, start, end, step uint64) int {
+	if !i.isTsValid(ts, start, end, step) {
+		return -1
+	}
+	if ts <= start { // to avoid overflow
+		return 0 // if pass validation and less than start, always first interval
+	}
+
+	offset := ts - start
+	// Calculate which interval the timestamp falls into
+	// Since intervals are right-closed: (start; start+step], (start+step; start+2*step], etc.
+	// we need to handle the case where ts is exactly on a step boundary
+	interval := offset / step
+	if interval*step == offset { // the same as offset % step == 0
+		// ts is exactly on a step boundary, so it belongs to the previous interval
+		interval--
+	}
+	return int(interval)
+}
+
+func (i IntervalMapperQueryRange) TimestampOf(interval int) uint64 {
+	// start as initial offset plus interval's offset
+	return i.start + (uint64(interval)+1)*i.step
+}
+
+func (i IntervalMapperQueryRange) IntervalCount() int {
+	return i.intervalCount
+}
+
+func (i IntervalMapperQueryRange) isTsValid(ts, start, end, step uint64) bool {
+	return ts > start && ts <= end && end != start && step != 0
+}
+
+type IntervalMapperInstant struct {
+	start, end     uint64
+	startMs, endMs uint64
+}
+
+func (i IntervalMapperInstant) Interval(ts uint64) int {
+	if !i.isTsValid(ts, i.start, i.end) {
+		return -1
+	}
+	return 0 // Instant queries only have one bucket
+}
+
+func (i IntervalMapperInstant) IntervalMs(tsmill int64) int {
+	ts := uint64(time.Duration(tsmill) * time.Millisecond)
+	if !i.isTsValid(ts, i.startMs, i.endMs) {
+		return -1
+	}
+
+	return 0 // Instant queries only have one bucket
+}
+
+func (i IntervalMapperInstant) IntervalCount() int {
+	return 1 // Instant queries only have one bucket
+}
+
+func (i IntervalMapperInstant) TimestampOf(int) uint64 {
+	return i.end
+}
+
+func (i IntervalMapperInstant) isTsValid(ts, start, end uint64) bool {
+	return ts >= start && ts <= end && end != start
+}
+
 type histSeries struct {
 	labels          Labels
 	hist            []Histogram
 	exemplars       []Exemplar
-	exemplarBuckets *bucketSet
+	exemplarBuckets bucketSet
 }
 
 type HistogramAggregator struct {
-	ss               map[string]histSeries
-	qs               []float64
-	len              int
-	start, end, step uint64
-	exemplarLimit    uint32
+	ss             map[string]histSeries
+	qs             []float64
+	intervalMapper IntervalMapper
+	exemplarLimit  uint32
 	// Reusable buffer for all label processing
-	labelBuffer Labels
+	labelBuffer            Labels
+	exemplarBucketsCreator func() bucketSet
 }
 
 func NewHistogramAggregator(req *tempopb.QueryRangeRequest, qs []float64, exemplarLimit uint32) *HistogramAggregator {
 	return &HistogramAggregator{
-		ss:            make(map[string]histSeries),
-		qs:            qs,
-		len:           IntervalCount(req.Start, req.End, req.Step),
-		start:         req.Start,
-		end:           req.End,
-		step:          req.Step,
-		exemplarLimit: exemplarLimit,
-		labelBuffer:   make(Labels, 0, 8), // Pre-allocate with reasonable capacity
+		ss:             make(map[string]histSeries),
+		qs:             qs,
+		intervalMapper: NewIntervalMapperFromReq(req),
+		exemplarLimit:  exemplarLimit,
+		labelBuffer:    make(Labels, 0, 8), // Pre-allocate with reasonable capacity
+		exemplarBucketsCreator: func() bucketSet {
+			return newExemplarBucketSet(exemplarLimit, req.Start, req.End, req.Step)
+		},
 	}
 }
 
@@ -1566,18 +1693,14 @@ func (h *HistogramAggregator) Combine(in []*tempopb.TimeSeries) {
 
 			// Create a fresh histogram slice for each series to avoid sharing memory
 			// Pool reuse was causing data contamination between series
-			histSlice := make([]Histogram, h.len)
+			histSlice := make([]Histogram, h.intervalMapper.IntervalCount())
 
 			existing = histSeries{
 				labels: withoutBucket,
 				hist:   histSlice,
 				// Pre-allocate exemplars slice with capacity hint to reduce allocations
-				exemplars: make([]Exemplar, 0, len(ts.Exemplars)),
-				exemplarBuckets: newBucketSet(
-					h.exemplarLimit,
-					alignStart(h.start, h.end, h.step),
-					alignEnd(h.start, h.end, h.step),
-				),
+				exemplars:       make([]Exemplar, 0, len(ts.Exemplars)),
+				exemplarBuckets: h.exemplarBucketsCreator(),
 			}
 		}
 
@@ -1587,7 +1710,7 @@ func (h *HistogramAggregator) Combine(in []*tempopb.TimeSeries) {
 			if sample.Value == 0 {
 				continue
 			}
-			j := IntervalOfMs(sample.TimestampMs, h.start, h.end, h.step)
+			j := h.intervalMapper.IntervalMs(sample.TimestampMs)
 			if j >= 0 && j < len(existing.hist) {
 				existing.hist[j].Record(b, int(sample.Value))
 			}
@@ -1665,7 +1788,6 @@ func (h *HistogramAggregator) Results() SeriesSet {
 			// Append label for the quantile
 			labels := append((Labels)(nil), in.labels...)
 			labels = append(labels, Label{"p", NewStaticFloat(q)})
-			s := labels.String()
 
 			ts := TimeSeries{
 				Labels: labels,
@@ -1689,7 +1811,7 @@ func (h *HistogramAggregator) Results() SeriesSet {
 				}
 			}
 
-			results[s] = ts
+			results[labels.MapKey()] = ts
 		}
 	}
 
@@ -1958,7 +2080,7 @@ func processBottomK(input SeriesSet, valueLength, limit int) SeriesSet {
 
 // initSeriesInResult ensures that a series exists in the result map, and
 // initializes it with NaN values if it doesn't exist in the result set.
-func initSeriesInResult(result SeriesSet, key string, input SeriesSet, valueLength int) {
+func initSeriesInResult(result SeriesSet, key SeriesMapKey, input SeriesSet, valueLength int) {
 	if _, exists := result[key]; exists {
 		// series already exists, no need to initialize
 		return
