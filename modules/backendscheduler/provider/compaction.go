@@ -21,6 +21,7 @@ import (
 	"github.com/grafana/tempo/tempodb/blockselector"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -31,11 +32,17 @@ type CompactionConfig struct {
 	Compactor        tempodb.CompactorConfig `yaml:"compaction"`
 	MaxJobsPerTenant int                     `yaml:"max_jobs_per_tenant"`
 	Backoff          backoff.Config          `yaml:"backoff"`
+	MinInputBlocks   int                     `yaml:"min_input_blocks"`
+	MaxInputBlocks   int                     `yaml:"max_input_blocks"`
 }
 
 func (cfg *CompactionConfig) RegisterFlagsAndApplyDefaults(prefix string, f *flag.FlagSet) {
 	f.DurationVar(&cfg.MeasureInterval, prefix+"backend-scheduler.compaction-provider.measure-interval", time.Minute, "Interval at which to metric tenant blocklist")
 	f.IntVar(&cfg.MaxJobsPerTenant, prefix+"backend-scheduler.max-jobs-per-tenant", 1000, "Maximum number of jobs to run per tenant before moving on to the next tenant")
+
+	// Compaction
+	f.IntVar(&cfg.MinInputBlocks, prefix+".min-input-blocks", blockselector.DefaultMinInputBlocks, "Minimum number of blocks to compact in a single job.")
+	f.IntVar(&cfg.MaxInputBlocks, prefix+".max-input-blocks", blockselector.DefaultMaxInputBlocks, "Maximum number of blocks to compact in a single job.")
 
 	// Backoff
 	f.DurationVar(&cfg.Backoff.MinBackoff, prefix+".backoff-min-period", 100*time.Millisecond, "Minimum delay when backing off.")
@@ -86,22 +93,28 @@ func (p *CompactionProvider) Start(ctx context.Context) <-chan *work.Job {
 	go func() {
 		defer close(jobs)
 
-		measureTicker := time.NewTicker(p.cfg.MeasureInterval)
-		defer measureTicker.Stop()
-
 		level.Info(p.logger).Log("msg", "compaction provider started")
 
 		var (
 			job               *work.Job
 			b                 = backoff.New(ctx, p.cfg.Backoff)
 			curTenantJobCount int
+			span              trace.Span
+			loopCtx           context.Context
+			spanStarted       bool
 		)
 
 		reset := func() {
 			metricTenantReset.WithLabelValues(p.curTenant.Value()).Inc()
+			span.AddEvent("tenant reset", trace.WithAttributes(
+				attribute.String("tenant_id", p.curTenant.Value()),
+				attribute.Int("job_count", curTenantJobCount),
+			))
 			p.curSelector = nil
 			p.curTenant = nil
 			curTenantJobCount = 0
+			span.End()
+			spanStarted = false
 		}
 
 		for {
@@ -110,22 +123,29 @@ func (p *CompactionProvider) Start(ctx context.Context) <-chan *work.Job {
 				return
 			}
 
+			if !spanStarted {
+				loopCtx, span = tracer.Start(ctx, "compactionProviderLoop")
+				spanStarted = true
+			}
+
 			if p.curSelector == nil {
-				if !p.prepareNextTenant(ctx) {
+				b.Wait()
+				if !p.prepareNextTenant(loopCtx) {
 					level.Info(p.logger).Log("msg", "received empty tenant", "waiting", b.NextDelay())
 					metricTenantBackoff.Inc()
-					b.Wait()
+					span.AddEvent("tenant not prepared")
 				}
 				continue
 			}
 
 			if curTenantJobCount >= p.cfg.MaxJobsPerTenant {
 				level.Info(p.logger).Log("msg", "max jobs per tenant reached, skipping to next tenant")
+				span.AddEvent("max jobs per tenant reached")
 				reset()
 				continue
 			}
 
-			job = p.createJob(ctx)
+			job = p.createJob(loopCtx)
 			if job == nil {
 				level.Info(p.logger).Log("msg", "tenant exhausted, skipping to next tenant after delay", "waiting", b.NextDelay())
 				// we don't have a job, reset the curTenant and try again
@@ -139,14 +159,35 @@ func (p *CompactionProvider) Start(ctx context.Context) <-chan *work.Job {
 			select {
 			case <-ctx.Done():
 				level.Info(p.logger).Log("msg", "compaction provider stopping")
+				span.AddEvent("context done")
+				span.End()
 				return
-			case <-measureTicker.C:
-				// Measure the tenants to get their current compaction status
-				p.measureTenants()
 			case jobs <- job:
 				metricJobsCreated.WithLabelValues(p.curTenant.Value()).Inc()
 				curTenantJobCount++
 				b.Reset()
+				span.AddEvent("job created", trace.WithAttributes(
+					attribute.String("job_id", job.ID),
+					attribute.String("tenant_id", p.curTenant.Value()),
+				))
+				span.End()
+				spanStarted = false
+			}
+		}
+	}()
+
+	// Measure the tenants to get their current compaction status in a separate
+	// goroutine to avoid blocking the main job loop.
+	go func() {
+		measureTicker := time.NewTicker(p.cfg.MeasureInterval)
+		defer measureTicker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				level.Info(p.logger).Log("msg", "compaction provider measure ticker stopping")
+				return
+			case <-measureTicker.C:
+				p.measureTenants()
 			}
 		}
 	}()
@@ -155,6 +196,9 @@ func (p *CompactionProvider) Start(ctx context.Context) <-chan *work.Job {
 }
 
 func (p *CompactionProvider) prepareNextTenant(ctx context.Context) bool {
+	_, span := tracer.Start(ctx, "prepareNextTenant")
+	defer span.End()
+
 	if p.curPriority.Len() == 0 {
 		p.prioritizeTenants(ctx)
 		if p.curPriority.Len() == 0 {
@@ -164,6 +208,7 @@ func (p *CompactionProvider) prepareNextTenant(ctx context.Context) bool {
 
 	p.curTenant = heap.Pop(p.curPriority).(*tenantselector.Item)
 	if p.curTenant == nil {
+		span.AddEvent("no more tenants to compact")
 		return false
 	}
 
@@ -172,7 +217,7 @@ func (p *CompactionProvider) prepareNextTenant(ctx context.Context) bool {
 }
 
 func (p *CompactionProvider) createJob(ctx context.Context) *work.Job {
-	_, span := tracer.Start(ctx, "create-job")
+	_, span := tracer.Start(ctx, "createJob")
 	defer span.End()
 
 	span.SetAttributes(attribute.String("tenant_id", p.curTenant.Value()))
@@ -182,9 +227,16 @@ func (p *CompactionProvider) createJob(ctx context.Context) *work.Job {
 		span.AddEvent("not-enough-input-blocks", trace.WithAttributes(
 			attribute.Int("input_blocks", len(input)),
 		))
+
+		span.SetStatus(codes.Error, "not enough input blocks for compaction")
 		return nil
 	}
 
+	span.AddEvent("input blocks selected", trace.WithAttributes(
+		attribute.Int("input_blocks", len(input)),
+		attribute.StringSlice("input_block_ids", input),
+	))
+	span.SetStatus(codes.Ok, "compaction job created")
 	return &work.Job{
 		ID:   uuid.New().String(),
 		Type: tempopb.JobType_JOB_TYPE_COMPACTION,
@@ -196,7 +248,7 @@ func (p *CompactionProvider) createJob(ctx context.Context) *work.Job {
 }
 
 func (p *CompactionProvider) getNextBlockIDs(_ context.Context) ([]string, bool) {
-	ids := make([]string, 0, blockselector.DefaultMaxInputBlocks)
+	ids := make([]string, 0, p.cfg.MaxInputBlocks)
 
 	toBeCompacted, _ := p.curSelector.BlocksToCompact()
 
@@ -208,14 +260,14 @@ func (p *CompactionProvider) getNextBlockIDs(_ context.Context) ([]string, bool)
 		ids = append(ids, b.BlockID.String())
 	}
 
-	return ids, len(ids) >= blockselector.DefaultMinInputBlocks
+	return ids, len(ids) >= p.cfg.MinInputBlocks
 }
 
 // prioritizeTenants prioritizes tenants based on the number of outstanding blocks.
 func (p *CompactionProvider) prioritizeTenants(ctx context.Context) {
 	tenants := []tenantselector.Tenant{}
 
-	_, span := tracer.Start(ctx, "prioritize-tenants")
+	_, span := tracer.Start(ctx, "prioritizeTenants")
 	defer span.End()
 
 	p.curPriority = tenantselector.NewPriorityQueue() // wipe and restart
@@ -271,21 +323,26 @@ func (p *CompactionProvider) prioritizeTenants(ctx context.Context) {
 
 	for _, tenant := range tenants {
 		priority = ts.PriorityForTenant(tenant.ID)
-		item = tenantselector.NewItem(tenant.ID, priority)
-		heap.Push(p.curPriority, item)
+
+		if priority >= p.cfg.MinInputBlocks {
+			item = tenantselector.NewItem(tenant.ID, priority)
+			heap.Push(p.curPriority, item)
+		}
 	}
 }
 
 func (p *CompactionProvider) measureTenants() {
+	_, span := tracer.Start(context.Background(), "measureTenants")
+	defer span.End()
+
+	owns := func(_ string) bool {
+		return true
+	}
+
 	var blockSelector blockselector.CompactionBlockSelector
 	for _, tenant := range p.store.Tenants() {
 		blockSelector, _ = p.newBlockSelector(tenant)
-
-		yes := func(_ string) bool {
-			return true
-		}
-
-		tempodb.MeasureOutstandingBlocks(tenant, blockSelector, yes)
+		tempodb.MeasureOutstandingBlocks(tenant, blockSelector, owns)
 	}
 }
 
@@ -296,29 +353,19 @@ func (p *CompactionProvider) newBlockSelector(tenantID string) (blockselector.Co
 		blocklist     = make([]*backend.BlockMeta, 0, len(fullBlocklist))
 	)
 
-	// Query the work for the jobs and build up a list of UUIDs which we can match against.
+	// Query the work for the jobs and build up a list of UUIDs which we can match against and skip on the selector.
 	var (
 		perTenantBlockIDs = make(map[backend.UUID]struct{})
 		bid               backend.UUID
 		err               error
-
-		jobTenant string
-		jobType   tempopb.JobType
-		jobStatus tempopb.JobStatus
 	)
 
 	for _, job := range p.sched.ListJobs() {
-		jobTenant = job.Tenant()
-		if jobTenant != tenantID {
+		if job.Tenant() != tenantID {
 			continue
 		}
 
-		if jobType = job.GetType(); jobType == tempopb.JobType_JOB_TYPE_UNSPECIFIED {
-			continue
-		}
-
-		jobStatus = job.GetStatus()
-		if jobStatus != tempopb.JobStatus_JOB_STATUS_RUNNING && jobStatus != tempopb.JobStatus_JOB_STATUS_UNSPECIFIED {
+		if job.GetType() == tempopb.JobType_JOB_TYPE_UNSPECIFIED {
 			continue
 		}
 
@@ -352,7 +399,7 @@ func (p *CompactionProvider) newBlockSelector(tenantID string) (blockselector.Co
 		window,
 		p.cfg.Compactor.MaxCompactionObjects,
 		p.cfg.Compactor.MaxBlockBytes,
-		blockselector.DefaultMinInputBlocks,
-		blockselector.DefaultMaxInputBlocks,
+		p.cfg.MinInputBlocks,
+		p.cfg.MaxInputBlocks,
 	), len(blocklist)
 }
