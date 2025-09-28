@@ -252,7 +252,9 @@ This alert fires when a Kafka partition in a consumer group is lagging behind th
    - Examine Kafka metrics for unusual patterns (high produce rate, throttling, etc.)
 
 3. Possible resolutions:
-   - Scale up the consumer group by adding more instances
+   - For the metric generators scale up the consumer group by adding more instances
+   - Scale up the block-builder instances to match the ingester partitions.
+   - For the block-builder consider to reduce the cycle-time
    - Increase resources (CPU/memory) for the consumer instances
    - Check for and fix any bottlenecks in the processing pipeline
    - If the lag is temporary due to a spike in traffic, monitor to see if it recovers
@@ -310,3 +312,8 @@ This can mean multiple things:
 - scheduler is having issues handing out job or failing internallt due to outage/issues on backend object store.
 
 Look at the logs for scheduler and worker and fix the issues.
+
+## TempoVultureHighErrorRate
+
+This alert fires when Tempo vulture detects a high error rate (above the configured threshold) while validating write or read paths. It indicates there are problems with trace processing or storage.
+
