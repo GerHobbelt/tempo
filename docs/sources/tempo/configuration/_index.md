@@ -1913,6 +1913,11 @@ overrides:
       #  in the front-end configuration is used.
       [max_metrics_duration: <duration> | default = 0s]
 
+      # Per-user option to left-pad trace IDs with zeros to 32 hex characters in search API responses.
+      # When enabled, trace IDs like "8efff798038103d269b633813fc703" will be returned as
+      # "008efff798038103d269b633813fc703" to comply with the OpenTelemetry and W3C Trace Context specifications.
+      [left_pad_trace_ids: <bool> | default = false]
+
     # Compaction related overrides
     compaction:
       # Per-user block retention. If this value is set to 0 (default),
@@ -1961,6 +1966,18 @@ overrides:
       #   tempo_metrics_generator_registry_entities_limited_total
       # This setting only applies when limiter_type is set to "entity".
       [max_active_entities: <int>]
+
+      # Maximum number of distinct values any single label can have. When a label exceeds the
+      # configured threshold, all new label value is replaced with `__cardinality_overflow__`.
+      # All other labels that is under the limit are preserved
+      # If the limit is reached, no new label values will be added to the limit label.
+      # The amount of limited entities can be observed with the metric:
+      #   tempo_metrics_generator_registry_label_values_limited_total
+      # To view the estimated cardinality demand per label:
+      #   tempo_metrics_generator_registry_label_cardinality_demand_estimate
+      # This setting only applies when limiter_type is set to "entity".
+      # A value of 0 disables this limiter.
+      [max_cardinality_per_label:  <uint64> | default = 0]
 
       # Per-user configuration of the collection interval. A value of 0 means the global default is
       # used set in the metrics_generator config block.
@@ -2016,7 +2033,15 @@ overrides:
           [peer_attributes: <list of string>]
           [enable_client_server_prefix: <bool>]
           [enable_messaging_system_latency_histogram: <bool>]
-
+          [filter_policies: [
+            [
+              include/include_any/exclude:
+                match_type: <string> # options: strict, regexp
+                attributes:
+                  - key: <string>
+                    value: <any>
+            ]
+          ]]
         # Configuration for the span-metrics processor
         span_metrics:
           [histogram_buckets: <list of float>]
@@ -2031,7 +2056,7 @@ overrides:
                   - key: <string>
                     value: <any>
             ]
-          ]
+          ]]
           [dimension_mappings: <list of map>]
           # Enable target_info metrics
           [enable_target_info: <bool>]
@@ -2251,7 +2276,7 @@ usage_report:
 ```
 
 If you are using a Helm chart, you can enable or disable usage reporting by changing the `reportingEnabled` value.
-This value is available in the [tempo-distributed](https://github.com/grafana/helm-charts/tree/main/charts/tempo-distributed) and the [tempo](https://github.com/grafana/helm-charts/tree/main/charts/tempo) Helm charts.
+This value is available in the [tempo-distributed](https://github.com/grafana-community/helm-charts/tree/main/charts/tempo-distributed) and the [tempo](https://github.com/grafana/helm-charts/tree/main/charts/tempo) Helm charts.
 
 ```yaml
 # -- If true, Tempo will report anonymous usage data about the shape of a deployment to Grafana Labs
