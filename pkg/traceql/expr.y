@@ -3,6 +3,7 @@ package traceql
 
 import (
   "time"
+  "math"
 )
 %}
 
@@ -404,13 +405,23 @@ static:
   | KIND_CLIENT      { $$ = NewStaticKind(KindClient)     }
   | KIND_PRODUCER    { $$ = NewStaticKind(KindProducer)   }
   | KIND_CONSUMER    { $$ = NewStaticKind(KindConsumer)   }
+  | IDENTIFIER
+      {
+          if $1 == "minInt" {
+            $$ = NewStaticInt(math.MinInt)
+          } else if $1 == "maxInt" {
+            $$ = NewStaticInt(math.MaxInt)
+          } else {
+            yylex.(*lexer).Error("unknown identifier: " + $1)
+            $$ = NewStaticNil()
+          }
+      }
   ;
 
 // ** DO NOT ADD MORE FEATURES **
 // Going forward with scoped intrinsics only
 intrinsicField:
     IDURATION       { $$ = NewIntrinsic(IntrinsicDuration)         }
-  | CHILDCOUNT      { $$ = NewIntrinsic(IntrinsicChildCount)       }
   | NAME            { $$ = NewIntrinsic(IntrinsicName)             }
   | STATUS          { $$ = NewIntrinsic(IntrinsicStatus)           }
   | STATUS_MESSAGE  { $$ = NewIntrinsic(IntrinsicStatusMessage)    }
@@ -438,6 +449,7 @@ scopedIntrinsicField:
   | SPAN_COLON STATUS_MESSAGE       { $$ = NewIntrinsic(IntrinsicStatusMessage)          }
   | SPAN_COLON ID                   { $$ = NewIntrinsic(IntrinsicSpanID)                 }
   | SPAN_COLON PARENT_ID            { $$ = NewIntrinsic(IntrinsicParentID)               }
+  | SPAN_COLON CHILDCOUNT           { $$ = NewIntrinsic(IntrinsicChildCount)             }
 // event:             
   | EVENT_COLON NAME                { $$ = NewIntrinsic(IntrinsicEventName)              }
   | EVENT_COLON TIMESINCESTART      { $$ = NewIntrinsic(IntrinsicEventTimeSinceStart)    }

@@ -2,6 +2,7 @@ package traceql
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -861,12 +862,13 @@ func TestSpansetFilterStatics(t *testing.T) {
 		{in: "{ `foo` }", expected: NewStaticString("foo")},
 		{in: "{ .foo }", expected: NewAttribute("foo")},
 		{in: "{ duration }", expected: NewIntrinsic(IntrinsicDuration)},
-		{in: "{ childCount }", expected: NewIntrinsic(IntrinsicChildCount)},
 		{in: "{ name }", expected: NewIntrinsic(IntrinsicName)},
 		{in: "{ parent }", expected: NewIntrinsic(IntrinsicParent)},
 		{in: "{ status }", expected: NewIntrinsic(IntrinsicStatus)},
 		{in: "{ statusMessage }", expected: NewIntrinsic(IntrinsicStatusMessage)},
 		{in: "{ 4321 }", expected: NewStaticInt(4321)},
+		{in: "{ maxInt }", expected: NewStaticInt(math.MaxInt)},
+		{in: "{ minInt }", expected: NewStaticInt(math.MinInt)},
 		{in: "{ 1.234 }", expected: NewStaticFloat(1.234)},
 		{in: "{ 3h }", expected: NewStaticDuration(3 * time.Hour)},
 		{in: "{ 1.5m }", expected: NewStaticDuration(1*time.Minute + 30*time.Second)},
@@ -1083,7 +1085,6 @@ func TestIntrinsics(t *testing.T) {
 		expected Intrinsic
 	}{
 		{in: "duration", expected: IntrinsicDuration},
-		{in: "childCount", expected: IntrinsicChildCount},
 		{in: "name", expected: IntrinsicName},
 		{in: "status", expected: IntrinsicStatus},
 		{in: "statusMessage", expected: IntrinsicStatusMessage},
@@ -1224,6 +1225,7 @@ func TestScopedIntrinsics(t *testing.T) {
 		{in: "span:statusMessage", expected: IntrinsicStatusMessage},
 		{in: "span:id", expected: IntrinsicSpanID},
 		{in: "span:parentID", expected: IntrinsicParentID},
+		{in: "span:childCount", expected: IntrinsicChildCount},
 		{in: "event:name", expected: IntrinsicEventName},
 		{in: "event:timeSinceStart", expected: IntrinsicEventTimeSinceStart},
 		{in: "link:traceID", expected: IntrinsicLinkTraceID},

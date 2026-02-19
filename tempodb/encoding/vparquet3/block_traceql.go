@@ -846,7 +846,7 @@ var intrinsicColumnLookups = map[traceql.Intrinsic]struct {
 	traceql.IntrinsicTraceID:          {intrinsicScopeTrace, traceql.TypeString, columnPathTraceID},
 	traceql.IntrinsicTraceStartTime:   {intrinsicScopeTrace, traceql.TypeDuration, columnPathStartTimeUnixNano},
 
-	// Not used in vparquet2, the following entries are only used to assign the default scope
+	// Not used in vparquet3, the following entries are only used to assign the default scope
 	traceql.IntrinsicEventName:              {intrinsicScopeEvent, traceql.TypeNil, ""},
 	traceql.IntrinsicLinkTraceID:            {intrinsicScopeLink, traceql.TypeNil, ""},
 	traceql.IntrinsicLinkSpanID:             {intrinsicScopeLink, traceql.TypeNil, ""},
@@ -946,7 +946,8 @@ func checkConditions(conditions []traceql.Condition) error {
 			cond.Attribute.Intrinsic == traceql.IntrinsicLinkTraceID ||
 			cond.Attribute.Intrinsic == traceql.IntrinsicLinkSpanID ||
 			cond.Attribute.Intrinsic == traceql.IntrinsicInstrumentationName ||
-			cond.Attribute.Intrinsic == traceql.IntrinsicInstrumentationVersion {
+			cond.Attribute.Intrinsic == traceql.IntrinsicInstrumentationVersion ||
+			cond.Attribute.Intrinsic == traceql.IntrinsicChildCount {
 
 			return fmt.Errorf("intrinsic '%s' not supported in vParquet3: %w", cond.Attribute.Intrinsic, util.ErrUnsupported)
 		}

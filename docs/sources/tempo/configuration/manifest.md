@@ -231,6 +231,7 @@ distributor:
         producer_max_buffered_bytes: 0
         target_consumer_lag_at_startup: 0s
         max_consumer_lag_at_startup: 0s
+        disable_kafka_telemetry: false
         consumer_group_lag_metric_update_interval: 0s
     extend_writes: true
     retry_after_on_resource_exhausted: 0s
@@ -641,6 +642,10 @@ metrics_generator:
                 - db.system
             span_multiplier_key: ""
             enable_virtual_node_label: false
+            database_name_attributes:
+                - db.namespace
+                - db.name
+                - db.system
         span_metrics:
             histogram_buckets:
                 - 0.002
@@ -825,6 +830,7 @@ ingest:
         producer_max_buffered_bytes: 1073741824
         target_consumer_lag_at_startup: 2s
         max_consumer_lag_at_startup: 15s
+        disable_kafka_telemetry: false
         consumer_group_lag_metric_update_interval: 1m0s
 block_builder:
     instance_id: hostname
@@ -1413,6 +1419,12 @@ live_store:
     metrics:
         time_overlap_cutoff: 0.2
     commit_interval: 5s
+    wal:
+        path: /var/tempo/live-store/traces
+        v2_encoding: none
+        search_encoding: none
+        ingestion_time_range_slack: 2m0s
+        version: vParquet4
     query_block_concurrency: 10
     complete_block_timeout: 1h0m0s
     complete_block_concurrency: 2

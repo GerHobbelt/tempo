@@ -457,6 +457,7 @@ func TestTraceToParquet(t *testing.T) {
 								SpanID:         []byte{0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01},
 								NestedSetLeft:  1,
 								NestedSetRight: 6,
+								ChildCount:     2,
 								ParentID:       -1,
 								Attrs: []Attribute{
 									attr("span.attr", "aaa"),
@@ -575,6 +576,7 @@ func TestTraceToParquet(t *testing.T) {
 								SpanID:         []byte{0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01},
 								NestedSetLeft:  1,
 								NestedSetRight: 10,
+								ChildCount:     2,
 								ParentID:       -1,
 								StatusCode:     int(v1_trace.Status_STATUS_CODE_ERROR),
 							},
@@ -593,6 +595,7 @@ func TestTraceToParquet(t *testing.T) {
 								ParentID:       1,
 								NestedSetLeft:  4,
 								NestedSetRight: 9,
+								ChildCount:     1,
 							},
 						},
 					}},
@@ -610,6 +613,7 @@ func TestTraceToParquet(t *testing.T) {
 								ParentSpanID:   []byte{0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03},
 								NestedSetLeft:  5,
 								NestedSetRight: 8,
+								ChildCount:     1,
 								ParentID:       4,
 							},
 							{
@@ -663,6 +667,8 @@ func TestTraceToParquet(t *testing.T) {
 									Name:         "event name",
 									Attributes: []*v1.KeyValue{
 										{Key: "event.attr", Value: &v1.AnyValue{Value: &v1.AnyValue_StringValue{StringValue: "bbb"}}},
+										{Key: "dedicated.event.1", Value: &v1.AnyValue{Value: &v1.AnyValue_StringValue{StringValue: "dedicated-event-attr-value-1"}}},
+										{Key: "dedicated.event.2", Value: &v1.AnyValue{Value: &v1.AnyValue_StringValue{StringValue: "dedicated-event-attr-value-2"}}},
 									},
 								}},
 							},
@@ -722,6 +728,10 @@ func TestTraceToParquet(t *testing.T) {
 									Name:               "event name",
 									Attrs: []Attribute{
 										attr("event.attr", "bbb"),
+									},
+									DedicatedAttributes: DedicatedAttributes{
+										String01: []string{"dedicated-event-attr-value-1"},
+										String02: []string{"dedicated-event-attr-value-2"},
 									},
 								}},
 							},
@@ -802,7 +812,7 @@ func BenchmarkEventToParquet(b *testing.B) {
 
 	ee := &Event{}
 	for i := 0; i < b.N; i++ {
-		eventToParquet(e, ee, s.StartTimeUnixNano)
+		eventToParquet(e, ee, s.StartTimeUnixNano, dedicatedColumnMapping{})
 	}
 }
 
