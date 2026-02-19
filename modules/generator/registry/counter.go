@@ -78,16 +78,31 @@ func (c *counter) Inc(lbls labels.Labels, value float64) {
 	c.seriesMtx.Lock()
 	defer c.seriesMtx.Unlock()
 
-	if existing, ok := c.series[hash]; ok {
-		c.updateSeries(hash, existing, value)
-		return
-	}
-
-	if !c.lifecycler.OnAdd(hash, 1) {
+	s, lbls, hash = resolveSeries(c.series, hash, lbls, c.lifecycler, 1)
+	if s != nil {
+		c.updateSeries(hash, s, value)
 		return
 	}
 
 	c.series[hash] = c.newSeries(lbls, value)
+}
+
+func resolveSeries[T any](series map[uint64]*T, hash uint64, lbls labels.Labels, lifecycler Limiter, count uint32) (*T, labels.Labels, uint64) {
+	// If we already track the series, return it.
+	if existing, ok := series[hash]; ok {
+		return existing, lbls, hash
+	}
+
+	// Otherwise, we need to let the lifecycler decide which labels to use
+	lbls, hash = lifecycler.OnAdd(hash, count, lbls)
+
+	// The lifecycler may have changed the labels, so we need to check again.
+	if existing, ok := series[hash]; ok {
+		return existing, lbls, hash
+	}
+
+	// Finally, we may still have a new series, so it will need to be created by the caller.
+	return nil, lbls, hash
 }
 
 func (c *counter) newSeries(lbls labels.Labels, value float64) *counterSeries {
@@ -122,7 +137,10 @@ func (c *counter) collectMetrics(appender storage.Appender, timeMs int64) error 
 			// different aggregation interval to avoid be downsampled.
 			endOfLastMinuteMs := getEndOfLastMinuteMs(timeMs)
 			_, err := appender.Append(0, s.labels, endOfLastMinuteMs, 0)
-			if err != nil {
+			// Out-of-order errors occur when a series is deleted from our registry due to staleness cleanup,
+			// but still exists in Prometheus's TSDB. When the series reappears, we attempt to add the initial 0
+			// but Prometheus already has more recent data. We ignore this error and continue with the current value.
+			if err != nil && !isOutOfOrderError(err) {
 				return err
 			}
 			s.registerSeenSeries()

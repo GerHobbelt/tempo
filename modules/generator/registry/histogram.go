@@ -103,16 +103,11 @@ func (h *histogram) ObserveWithExemplar(lbls labels.Labels, value float64, trace
 	h.seriesMtx.Lock()
 	defer h.seriesMtx.Unlock()
 
-	s, ok := h.series[hash]
-	if ok {
+	s, lbls, hash := resolveSeries(h.series, hash, lbls, h.lifecycler, h.activeSeriesPerHistogramSerie())
+	if s != nil {
 		h.updateSeries(hash, s, value, traceID, multiplier)
 		return
 	}
-
-	if !h.lifecycler.OnAdd(hash, h.activeSeriesPerHistogramSerie()) {
-		return
-	}
-
 	h.series[hash] = h.newSeries(lbls, value, traceID, multiplier)
 }
 
@@ -191,7 +186,7 @@ func (h *histogram) collectMetrics(appender storage.Appender, timeMs int64) erro
 			// different aggregation interval to avoid be downsampled.
 			endOfLastMinuteMs := getEndOfLastMinuteMs(timeMs)
 			_, err := appender.Append(0, s.countLabels, endOfLastMinuteMs, 0)
-			if err != nil {
+			if err != nil && !isOutOfOrderError(err) {
 				return err
 			}
 		}
@@ -213,7 +208,7 @@ func (h *histogram) collectMetrics(appender storage.Appender, timeMs int64) erro
 			if s.isNew() {
 				endOfLastMinuteMs := getEndOfLastMinuteMs(timeMs)
 				_, err = appender.Append(0, s.bucketLabels[i], endOfLastMinuteMs, 0)
-				if err != nil {
+				if err != nil && !isOutOfOrderError(err) {
 					return err
 				}
 			}
