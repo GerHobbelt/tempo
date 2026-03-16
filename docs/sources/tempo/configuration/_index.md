@@ -34,6 +34,7 @@ The Tempo configuration options include:
   - [Backend worker](#backend-worker)
   - [Storage](#storage)
     - [Local storage recommendations](#local-storage-recommendations)
+    - [Hedged requests](#hedged-requests)
     - [Storage block configuration example](#storage-block-configuration-example)
   - [Memberlist](#memberlist)
   - [Configuration blocks](#configuration-blocks)
@@ -1096,6 +1097,20 @@ For example, ingested bytes per day _times_ retention days = stored bytes.
 
 You can not use both local and object storage in the same Tempo deployment.
 
+### Hedged requests
+
+Each storage backend (GCS, S3, and Azure) supports hedged requests.
+Hedging reduces long-tail read latency by issuing a duplicate backend request after a configured delay.
+Tempo uses whichever response arrives first and discards the other.
+
+Configure hedging with two parameters in each backend block:
+
+- `hedge_requests_at` -- the delay before sending a duplicate request. Set this to approximately the p99 latency of your backend requests. Default is `0` (disabled).
+- `hedge_requests_up_to` -- the maximum number of requests to issue, including the original. Default is `2`. Requires `hedge_requests_at` to be set.
+
+Hedging is most effective on querier nodes, where read latency directly affects query performance.
+It has minimal impact on other components.
+
 ### Storage block configuration example
 
 The storage block configures TempoDB.
@@ -1809,11 +1824,6 @@ The storage WAL configuration block.
 # This can result in trace not being found if the trace falls outside the slack configuration value as the
 # start and end times of the block will not be updated in this case.
 [ingestion_time_range_slack: <duration> | default = unset]
-
-# WAL file format version
-# Options: vParquet4
-# Deprecated options: v2, vParquet3
-[version: <string> | default = "vParquet4"]
 ```
 
 ## Overrides
