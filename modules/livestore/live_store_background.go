@@ -13,6 +13,7 @@ import (
 	"github.com/grafana/tempo/tempodb/backend"
 	"github.com/grafana/tempo/tempodb/encoding"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
@@ -37,12 +38,13 @@ func (o *completeOp) Key() string { return o.tenantID + "/" + o.blockID.String()
 func (o *completeOp) Priority() int64 { return -o.at.Unix() }
 
 func (o *completeOp) backoff() time.Duration {
+	current := o.bo
 	o.bo *= 2
 	if o.bo > o.maxBackoff {
 		o.bo = o.maxBackoff
 	}
 
-	return o.bo
+	return current
 }
 
 func (s *LiveStore) startAllBackgroundProcesses() {
@@ -116,6 +118,7 @@ func (s *LiveStore) processCompleteOp(op *completeOp) error {
 	if err != nil {
 		level.Error(s.logger).Log("msg", "failed to retrieve instance for completion", "tenant", op.tenantID, "err", err)
 		observeFailedOp(op)
+		span.SetStatus(codes.Error, err.Error())
 		span.RecordError(err)
 		return err
 	}
@@ -175,19 +178,38 @@ func (s *LiveStore) retryCompleteOp(op *completeOp, span oteltrace.Span, msg str
 	}()
 }
 
-func (s *LiveStore) perTenantCutToWalLoop(instance *instance) {
-	// ticker
-	ticker := time.NewTicker(s.cfg.InstanceFlushPeriod)
-	defer ticker.Stop()
+func (s *LiveStore) startPerTenantCutToWalLoop(inst *instance) {
+	s.cutToWalWg.Add(1)
+	go func() {
+		defer s.cutToWalWg.Done()
 
-	for {
+		// Wait for startup to finish; also listen on cutToWalStop so we can
+		// exit if shutdown happens before startup completes.
 		select {
-		case <-ticker.C:
-			s.cutOneInstanceToWal(s.ctx, instance, false)
-		case <-s.ctx.Done():
+		case <-s.startupComplete:
+		case <-s.cutToWalStop:
 			return
 		}
-	}
+
+		ticker := time.NewTicker(s.cfg.InstanceFlushPeriod)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				s.cutOneInstanceToWal(s.ctx, inst, false)
+			case <-s.cutToWalStop:
+				return
+			case <-s.ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
+func (s *LiveStore) stopAllCutToWalLoops() {
+	close(s.cutToWalStop)
+	s.cutToWalWg.Wait()
 }
 
 func (s *LiveStore) perTenantCleanupLoop(inst *instance) {

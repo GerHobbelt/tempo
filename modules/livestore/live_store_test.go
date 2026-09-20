@@ -148,8 +148,9 @@ func TestLiveStorePushBytesRejectsWhenStopping(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, liveStore)
 
-	// Transition to stopping state, then verify writes are rejected.
-	_ = liveStore.stopping(nil)
+	// Stop the service so writes are rejected.
+	err = services.StopAndAwaitTerminated(context.Background(), liveStore)
+	require.NoError(t, err)
 
 	id := test.ValidTraceID(nil)
 	expectedTrace := test.MakeTrace(1, id)
@@ -269,8 +270,9 @@ func TestLiveStoreFullBlockLifecycleCheating(t *testing.T) {
 	requireInstanceState(t, inst, instanceState{liveTraces: 1, walBlocks: 0, completeBlocks: 0})
 
 	// cut to head block and test
-	err = inst.cutIdleTraces(t.Context(), true)
+	drained, err := inst.cutIdleTraces(t.Context(), true)
 	require.NoError(t, err)
+	require.True(t, drained, "should drain live traces in one iteration")
 
 	requireTraceInLiveStore(t, liveStore, expectedID, expectedTrace)
 	requireTraceInBlock(t, inst.headBlock, expectedID, expectedTrace)
@@ -332,8 +334,9 @@ func TestLiveStoreReplaysTraceInHeadBlock(t *testing.T) {
 	require.NoError(t, err)
 
 	// cut to head block
-	err = inst.cutIdleTraces(t.Context(), true)
+	drained, err := inst.cutIdleTraces(t.Context(), true)
 	require.NoError(t, err)
+	require.True(t, drained, "should drain live traces in one iteration")
 
 	// stop the live store and then create a new one to simulate a restart and replay the data on disk
 	err = services.StopAndAwaitTerminated(t.Context(), liveStore)
@@ -360,8 +363,9 @@ func TestLiveStoreReplaysTraceInWalBlocks(t *testing.T) {
 	require.NoError(t, err)
 
 	// cut to head block
-	err = inst.cutIdleTraces(t.Context(), true)
+	drained, err := inst.cutIdleTraces(t.Context(), true)
 	require.NoError(t, err)
+	require.True(t, drained, "should drain live traces in one iteration")
 
 	// cut head to wal blocks
 	_, err = inst.cutBlocks(t.Context(), true)
@@ -392,8 +396,9 @@ func TestLiveStoreReplaysTraceInCompleteBlocks(t *testing.T) {
 	require.NoError(t, err)
 
 	// cut to head block
-	err = inst.cutIdleTraces(t.Context(), true)
+	drained, err := inst.cutIdleTraces(t.Context(), true)
 	require.NoError(t, err)
+	require.True(t, drained, "should drain live traces in one iteration")
 
 	// cut head to wal blocks
 	walUUID, err := inst.cutBlocks(t.Context(), true)
@@ -424,7 +429,9 @@ func TestLiveStoreDropsInvalidCompleteBlocksOnRestart(t *testing.T) {
 	inst, err := liveStore.getOrCreateInstance(testTenantID)
 	require.NoError(t, err)
 
-	require.NoError(t, inst.cutIdleTraces(t.Context(), true))
+	drained, cutErr := inst.cutIdleTraces(t.Context(), true)
+	require.NoError(t, cutErr)
+	require.True(t, drained, "should drain live traces in one iteration")
 	walUUID, err := inst.cutBlocks(t.Context(), true)
 	require.NoError(t, err)
 	_, err = inst.completeBlock(context.Background(), walUUID)
@@ -658,8 +665,9 @@ func TestLiveStoreUsesRecordTimestampForBlockStartAndEnd(t *testing.T) {
 		require.NoError(t, err)
 
 		// force just pushed traces to the head block
-		err = inst.cutIdleTraces(t.Context(), true)
+		drained, err := inst.cutIdleTraces(t.Context(), true)
 		require.NoError(t, err)
+		require.True(t, drained, "should drain live traces in one iteration")
 
 		meta := inst.headBlock.BlockMeta()
 		require.Equal(t, tc.expectedStart, meta.StartTime)
@@ -700,7 +708,7 @@ func TestLiveStoreShutdownWithPendingCompletions(t *testing.T) {
 	requireTraceInLiveStore(t, liveStore, expectedID, expectedTrace)
 	requireInstanceState(t, inst, instanceState{liveTraces: 1, walBlocks: 0, completeBlocks: 0})
 
-	require.NoError(t, liveStore.stopping(nil))
+	require.NoError(t, services.StopAndAwaitTerminated(context.Background(), liveStore))
 }
 
 func TestLiveStoreQueryMethodsBeforeStarted(t *testing.T) {
@@ -843,8 +851,8 @@ func TestLiveStoreQueryMethodsAfterStopping(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, liveStore)
 
-	// Error expected from Kafka reader shutdown; we only care about query behavior after stopping begins.
-	_ = liveStore.stopping(nil)
+	// Stop the service so queries are rejected.
+	_ = services.StopAndAwaitTerminated(context.Background(), liveStore)
 
 	ctx := user.InjectOrgID(context.Background(), testTenantID)
 
@@ -876,8 +884,8 @@ func TestLiveStoreQueryMethodsAfterStoppingWithFailOnHighLag(t *testing.T) {
 
 	liveStore.cfg.FailOnHighLag = true
 
-	// Error expected from Kafka reader shutdown; we only care about query behavior after stopping begins.
-	_ = liveStore.stopping(nil)
+	// Stop the service so queries are rejected.
+	_ = services.StopAndAwaitTerminated(context.Background(), liveStore)
 
 	ctx := user.InjectOrgID(context.Background(), testTenantID)
 
@@ -1105,6 +1113,7 @@ func TestIsLagged(t *testing.T) {
 		lastRecordNano int64
 		end            time.Time
 		expectedLagged bool
+		expectedError  bool
 		description    string
 	}{
 		{
@@ -1113,8 +1122,9 @@ func TestIsLagged(t *testing.T) {
 			readerLag:      50000000,                             // high lag
 			lastRecordNano: now.Add(-100 * time.Hour).UnixNano(), // high lag
 			end:            now.Add(-1 * time.Second),
-			expectedLagged: false,
-			description:    "When FailOnHighLag is disabled, isLagged should always return false",
+			expectedLagged: true,
+			expectedError:  false,
+			description:    "When FailOnHighLag is disabled, isLagged should returns true, but methods should not return error",
 		},
 		{
 			name:           "lag unknown - should be lagged",
@@ -1123,6 +1133,7 @@ func TestIsLagged(t *testing.T) {
 			lastRecordNano: now.Add(-100 * time.Hour).UnixNano(), // high lag
 			end:            now,
 			expectedLagged: true,
+			expectedError:  true,
 			description:    "When lag is unknown (nil), prefer error over potentially incomplete results",
 		},
 		{
@@ -1132,6 +1143,7 @@ func TestIsLagged(t *testing.T) {
 			lastRecordNano: -1, // no last record yet
 			end:            now,
 			expectedLagged: true,
+			expectedError:  true,
 			description:    "When no last record yet, should not be lagged",
 		},
 		{
@@ -1141,6 +1153,7 @@ func TestIsLagged(t *testing.T) {
 			lastRecordNano: now.UnixNano(), // no lag
 			end:            now.Add(-1 * time.Second),
 			expectedLagged: false,
+			expectedError:  false,
 			description:    "When lag is low (near zero), recent requests should not be lagged",
 		},
 		{
@@ -1150,6 +1163,7 @@ func TestIsLagged(t *testing.T) {
 			lastRecordNano: now.Add(-10 * time.Second).UnixNano(), // 10 seconds ago
 			end:            now.Add(-5 * time.Second),             // 5 seconds ago
 			expectedLagged: true,
+			expectedError:  true,
 			description:    "When lag is high and request is within the lag period, should be lagged",
 		},
 		{
@@ -1159,6 +1173,7 @@ func TestIsLagged(t *testing.T) {
 			lastRecordNano: now.Add(-10 * time.Second).UnixNano(), // 10 seconds ago
 			end:            now.Add(-100 * time.Second),           // 100 seconds ago (well before lag)
 			expectedLagged: false,
+			expectedError:  false,
 			description:    "When lag is high but request is old (outside lag period), should not be lagged",
 		},
 		{
@@ -1168,6 +1183,7 @@ func TestIsLagged(t *testing.T) {
 			lastRecordNano: now.Add(-10 * time.Second).UnixNano(), // last record was 10s ago
 			end:            now.Add(-10 * time.Second),            // request end is 10s ago
 			expectedLagged: false,
+			expectedError:  false,
 			description:    "When request end time is equals the calculated lag, should not be lagged",
 		},
 	}
@@ -1199,7 +1215,7 @@ func TestIsLagged(t *testing.T) {
 					End:   uint32(tc.end.Unix()),
 				})
 
-				if tc.expectedLagged {
+				if tc.expectedError {
 					require.ErrorIs(t, err, errLagged)
 					require.Nil(t, resp)
 				} else {
@@ -1212,11 +1228,11 @@ func TestIsLagged(t *testing.T) {
 				ctx := user.InjectOrgID(t.Context(), testTenantID)
 				resp, err := ls.QueryRange(ctx, &tempopb.QueryRangeRequest{
 					Query: "{} | rate()",
-					Start: uint64(now.Add(-30 * time.Minute).UnixNano()),
+					Start: uint64(now.Add(-defaultCompleteBlockTimeout).UnixNano()),
 					End:   uint64(tc.end.UnixNano()),
 					Step:  uint64(time.Second),
 				})
-				if tc.expectedLagged {
+				if tc.expectedError {
 					require.ErrorIs(t, err, errLagged)
 					require.Nil(t, resp)
 				} else {

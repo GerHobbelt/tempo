@@ -28,6 +28,7 @@ import (
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
@@ -115,6 +116,12 @@ var (
 		Name:      "ready",
 		Help:      "1 if ready to serve queries, 0 otherwise",
 	})
+
+	metricLaggedRequests = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "tempo_live_store",
+		Name:      "lagged_requests_total",
+		Help:      "Requests where the live-store could not guarantee complete results due to Kafka lag.",
+	}, []string{"route"})
 )
 
 type LiveStore struct {
@@ -152,6 +159,9 @@ type LiveStore struct {
 	lagCancel           context.CancelFunc
 	readyErr            atomic.Pointer[error] // nil when ready to serve queries
 	lastRecordTimeNanos atomic.Int64          // stores timestamp of last consumed record as UnixNano, -1 means not set
+
+	cutToWalStop chan struct{}  // closed to stop perTenantCutToWalLoop goroutines before shutdown flush
+	cutToWalWg   sync.WaitGroup // tracks active perTenantCutToWalLoop goroutines
 }
 
 func New(cfg Config, overridesService overrides.Interface, completeBlockFlusher completeBlockFlusher, logger log.Logger, reg prometheus.Registerer) (*LiveStore, error) {
@@ -180,6 +190,7 @@ func New(cfg Config, overridesService overrides.Interface, completeBlockFlusher 
 		completeBlockLifecycle: completeBlockLifecycle,
 		completeQueues:         flushqueues.New[*completeOp](metricCompleteQueueLength),
 		startupComplete:        make(chan struct{}),
+		cutToWalStop:           make(chan struct{}),
 	}
 
 	// Initialize ready state to starting
@@ -451,6 +462,10 @@ func (s *LiveStore) stopping(error) error {
 		stopErr = errors.Join(stopErr, err)
 	}
 
+	level.Info(s.logger).Log("msg", "stopping periodic WAL flush goroutines")
+	s.stopAllCutToWalLoops()
+	level.Info(s.logger).Log("msg", "periodic WAL flush goroutines stopped")
+
 	// Flush all data to disk.
 	level.Info(s.logger).Log("msg", "cutting all instances to WAL")
 	s.cutAllInstancesToWal()
@@ -690,9 +705,7 @@ func (s *LiveStore) getOrCreateInstance(tenantID string) (*instance, error) {
 
 	s.instances[tenantID] = inst
 
-	s.runInBackground(func() {
-		s.perTenantCutToWalLoop(inst)
-	})
+	s.startPerTenantCutToWalLoop(inst)
 	s.runInBackground(func() {
 		s.perTenantCleanupLoop(inst)
 	})
@@ -726,29 +739,31 @@ func (s *LiveStore) cutOneInstanceToWal(ctx context.Context, inst *instance, imm
 		))
 	defer span.End()
 
-	// Regular trace cuts (live traces -> head block)
-	err := inst.cutIdleTraces(ctx, immediate)
-	if err != nil {
-		level.Error(s.logger).Log("msg", "failed to cut idle traces", "tenant", inst.tenantID, "err", err)
-		span.RecordError(err)
-	}
-
-	// Regular block cuts
-	blockID, err := inst.cutBlocks(ctx, immediate)
-	if err != nil {
-		level.Error(s.logger).Log("msg", "failed to cut blocks", "tenant", inst.tenantID, "err", err)
-		span.RecordError(err)
-	}
-
-	// If head block is cut, enqueue complete operation
-	if blockID != uuid.Nil {
-		span.AddEvent("block enqueued for completion",
-			oteltrace.WithAttributes(attribute.String("blockID", blockID.String())))
-		err = s.enqueueCompleteOp(inst.tenantID, blockID, false)
+	var liveTracesDrained bool
+	var err error
+	for !liveTracesDrained {
+		// Regular trace cuts (live traces -> head block)
+		liveTracesDrained, err = inst.cutIdleTraces(ctx, immediate)
 		if err != nil {
-			level.Error(s.logger).Log("msg", "failed to enqueue complete operation", "tenant", inst.tenantID, "err", err)
+			level.Error(s.logger).Log("msg", "failed to cut idle traces", "tenant", inst.tenantID, "err", err)
+			span.SetStatus(codes.Error, err.Error())
 			span.RecordError(err)
-			return
+			break
+		}
+		id, err := inst.cutBlocks(ctx, immediate)
+		if err != nil {
+			level.Error(s.logger).Log("msg", "failed to cut blocks", "tenant", inst.tenantID, "err", err)
+			span.SetStatus(codes.Error, err.Error())
+			span.RecordError(err)
+			break
+		}
+		if id != uuid.Nil {
+			span.AddEvent("block enqueued for completion",
+				oteltrace.WithAttributes(attribute.String("blockID", id.String())))
+			if err := s.enqueueCompleteOp(inst.tenantID, id, false); err != nil {
+				level.Error(s.logger).Log("msg", "failed to enqueue complete operation", "tenant", inst.tenantID, "err", err)
+				span.RecordError(err)
+			}
 		}
 	}
 }
@@ -818,7 +833,10 @@ func (s *LiveStore) FindTraceByID(ctx context.Context, req *tempopb.TraceByIDReq
 func (s *LiveStore) SearchRecent(ctx context.Context, req *tempopb.SearchRequest) (*tempopb.SearchResponse, error) {
 	return withInstance(ctx, s, func(inst *instance) (*tempopb.SearchResponse, error) {
 		if s.isLagged(int64(req.End) * 1e9) { // convert seconds to nanoseconds
-			return nil, errLagged
+			metricLaggedRequests.WithLabelValues("/tempopb.Querier/SearchRecent").Inc()
+			if s.cfg.FailOnHighLag {
+				return nil, errLagged
+			}
 		}
 		return inst.Search(ctx, req)
 	})
@@ -861,7 +879,10 @@ func (s *LiveStore) SearchTagValuesV2(ctx context.Context, req *tempopb.SearchTa
 func (s *LiveStore) QueryRange(ctx context.Context, req *tempopb.QueryRangeRequest) (*tempopb.QueryRangeResponse, error) {
 	return withInstance(ctx, s, func(inst *instance) (*tempopb.QueryRangeResponse, error) {
 		if s.isLagged(int64(req.End)) { // end param is already nanos, no need to convert
-			return nil, errLagged
+			metricLaggedRequests.WithLabelValues("/tempopb.Metrics/QueryRange").Inc()
+			if s.cfg.FailOnHighLag {
+				return nil, errLagged
+			}
 		}
 		return inst.QueryRange(ctx, req)
 	})
@@ -870,7 +891,7 @@ func (s *LiveStore) QueryRange(ctx context.Context, req *tempopb.QueryRangeReque
 var errLagged = errors.New("cannot guarantee complete results")
 
 func (s *LiveStore) isLagged(endNanos int64) bool {
-	if !s.cfg.FailOnHighLag || !s.cfg.ConsumeFromKafka { // if config disabled or no kafka consumption, never lagged
+	if !s.cfg.ConsumeFromKafka { // if config disabled or no kafka consumption, never lagged
 		return false
 	}
 	lag := s.calculateTimeLag(0)

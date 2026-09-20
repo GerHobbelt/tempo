@@ -234,7 +234,7 @@ distributor:
         max_consumer_lag_at_startup: 0s
         disable_kafka_telemetry: false
         consumer_group_lag_metric_update_interval: 0s
-    retry_after_on_resource_exhausted: 0s
+    retry_after_on_resource_exhausted: 5s
     max_attribute_bytes: 2048
 live_store_client:
     pool_config:
@@ -341,7 +341,7 @@ query_frontend:
         concurrent_jobs: 1000
         target_bytes_per_job: 104857600
         max_duration: 24h0m0s
-        query_backend_after: 30m0s
+        query_backend_after: 15m0s
         interval: 5m0s
         max_exemplars: 100
         streaming_shards: 200
@@ -356,7 +356,6 @@ query_frontend:
     mcp_server:
         enabled: false
     max_query_expression_size_bytes: 131072
-    rf1_after: 0001-01-01T00:00:00Z
 metrics_generator:
     ring:
         kvstore:
@@ -490,6 +489,7 @@ metrics_generator:
     limiter_type: series
     ingest_concurrency: 16
     instance_id: hostname
+    leave_consumer_group_on_shutdown: false
 ingest:
     kafka:
         address: localhost:9092
@@ -687,12 +687,13 @@ overrides:
     defaults:
         ingestion:
             rate_strategy: local
-            rate_limit_bytes: 15000000
-            burst_size_bytes: 20000000
+            rate_limit_bytes: 30000000
+            burst_size_bytes: 30000000
             max_traces_per_user: 10000
             retry_info_enabled: true
         read:
             max_bytes_per_tag_values_query: 1000000
+            max_condition_groups_per_tag_query: 100
         metrics_generator:
             generate_native_histograms: classic
             native_histogram_bucket_factor: 1.1
@@ -1032,7 +1033,7 @@ live_store:
         path: /var/tempo/live-store/traces
         ingestion_time_range_slack: 2m0s
     query_block_concurrency: 10
-    complete_block_timeout: 1h0m0s
+    complete_block_timeout: 20m0s
     complete_block_concurrency: 2
     shutdown_marker_dir: /var/tempo/live-store/shutdown-marker
     flush_check_period: 5s
@@ -1040,8 +1041,8 @@ live_store:
     max_trace_live: 30s
     max_trace_idle: 5s
     max_live_traces_bytes: 250000000
-    max_block_duration: 1m0s
-    max_block_bytes: 104857600
+    max_block_duration: 30s
+    max_block_bytes: 52428800
     readiness_target_lag: 0s
     readiness_max_wait: 30m0s
     fail_on_high_lag: false
