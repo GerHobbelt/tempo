@@ -128,7 +128,7 @@ For the complete mapping of all configuration blocks to deployment modes, refer 
 Tempo uses the server from `dskit/server`. For the full list of available server options, refer to the [dskit server configuration](https://github.com/grafana/dskit/blob/main/server/server.go#L66) and the [manifest](/docs/tempo/<TEMPO_VERSION>/configuration/manifest/).
 For details on how server settings apply across deployment modes, refer to the [Deployment modes](/docs/tempo/<TEMPO_VERSION>/reference-tempo-architecture/deployment-modes/) documentation.
 
-Additional root-level options such as `target`, `shutdown_delay`, `auth_enabled`, and `enable_go_runtime_metrics` are available as [command-line flags](/docs/tempo/<TEMPO_VERSION>/set-up-for-tracing/setup-tempo/command-line-flags/).
+Additional root-level options such as `target`, `shutdown_delay`, `auth_enabled`, `enable_go_runtime_metrics`, and `span_profiling` are available as [command-line flags](/docs/tempo/<TEMPO_VERSION>/set-up-for-tracing/setup-tempo/command-line-flags/).
 
 ```yaml
 # Optional. Setting to true enables multitenancy and requires X-Scope-OrgID header on all requests.
@@ -139,6 +139,13 @@ Additional root-level options such as `target`, `shutdown_delay`, `auth_enabled`
 
 # Optional. Enables streaming query results over HTTP.
 [stream_over_http_enabled: <bool> | default = false]
+
+# Optional. Enables span profiling via otelpyroscope. When enabled, Tempo attaches pprof goroutine
+# labels (span_id, span_name) to OTel spans and adds a pyroscope.profile.id attribute to root spans,
+# enabling profile-to-trace correlation in Pyroscope.
+# Requires OTEL_TRACES_EXPORTER, OTEL_EXPORTER_OTLP_ENDPOINT, or
+# OTEL_EXPORTER_OTLP_TRACES_ENDPOINT to be set.
+[span_profiling: <bool> | default = false]
 
 server:
     # HTTP server listen host
@@ -184,7 +191,24 @@ server:
     # Allow clients to send pings even when there are no active streams.
     # Tempo enables this by default to prevent GOAWAY errors during idle periods.
     [grpc_server_ping_without_stream_allowed: <bool> | default = true]
+
+    # Size of the read buffer for each gRPC connection (bytes).
+    # A smaller buffer may reduce memory usage but may lead to more system calls.
+    [grpc_server_read_buffer_size: <int> | default = 32768]
+
+    # Size of the write buffer for each gRPC connection (bytes).
+    # A smaller buffer may reduce memory usage but may lead to more system calls.
+    [grpc_server_write_buffer_size: <int> | default = 32768]
 ```
+
+### Internal server
+
+Tempo can expose a separate HTTP server for internal endpoints (health checks, metrics, readiness) on a dedicated port.
+This keeps internal traffic isolated from the public API.
+The `internal_server` block accepts the same fields as `server` but defaults to port `3101` with instrumentation disabled.
+The internal server is disabled by default; set `internal_server.enable: true` to activate it.
+
+For the full list of `internal_server` options, refer to the [manifest](/docs/tempo/<TEMPO_VERSION>/configuration/manifest/).
 
 ## Memory
 
@@ -379,6 +403,9 @@ Any key or values that exceed the configured limit are truncated before storing.
 The default value is `2048`.
 
 Use the `tempo_distributor_attributes_truncated_total` metric to track how many attributes are truncated.
+This metric includes `tenant` and `scope` labels, where `scope` is one of `resource`, `scope`, `span`, `event`, or `link`.
+
+When truncation occurs, the distributor also emits a rate-limited log line (at most one per second) with diagnostic details including the tenant, total truncated count, configured limit, and an example of the first truncated attribute (scope, name, field, and original size).
 
 For additional information, refer to [Troubleshoot out-of-memory errors](https://grafana.com/docs/tempo/<TEMPO_VERSION>/troubleshooting/out-of-memory-errors/).
 
@@ -568,6 +595,12 @@ live_store:
     # Duration to keep blocks in the live-store after they have been completed.
     [complete_block_timeout: <duration> | default = 20m]
 
+    # Duration to wait after a block is removed from the in-memory snapshot before deleting
+    # its files on disk. Must be at least the maximum querier->live-store call timeout
+    # (querier.search.query_timeout, default 30s) so in-flight queries iterating an older
+    # snapshot don't see ENOENT on page files.
+    [block_reclaim_grace: <duration> | default = 2m]
+
     # Target consumer lag threshold before the live-store is considered ready to serve queries.
     # Set to 0 to disable readiness waiting.
     [readiness_target_lag: <duration> | default = 0]
@@ -575,8 +608,11 @@ live_store:
     # Maximum time to wait for catching up at startup. Only used if readiness_target_lag > 0.
     [readiness_max_wait: <duration> | default = 30m]
 
-    # Fail on search and metrics requests if lag is high and live-store cannot guarantee completeness.
-    [fail_on_high_lag: <bool> | default = false]
+    # Fail search and metrics requests when the live-store cannot guarantee complete results,
+    # rather than returning a partial response. Trades availability for correctness.
+    # Requires `query_frontend.query_end_cutoff` to be non-zero.
+    # When disabled, lagged requests are still counted via `tempo_live_store_lagged_requests_total`.
+    [fail_on_high_lag: <bool> | default = true]
 
     # Remove partition owner from the ring on shutdown.
     [remove_owner_on_shutdown: <bool> | default = true]
@@ -718,6 +754,9 @@ metrics_generator:
 
             # List of attribute names used to identify the database name from span attributes. If it isn't set, the order is peer.service -> server.address -> network.peer.address -> db.name
             [database_name_attributes: <list of string> | default = ["db.namespace","db.name","db.system"]]
+
+            # List of policies that will be applied to spans for inclusion or exclusion.
+            [filter_policies: <list of filter policies config> | default = []]
 
         span_metrics:
 
@@ -910,10 +949,10 @@ query_frontend:
     # (default: 0)
     [api_timeout: <duration>]
 
-    # Prevents querying incomplete recent data by excluding the most recent portion of the time range.
-    # Useful when live-store data may not yet be fully available for querying.
-    # 0 disables this cutoff.
-    # (default: 0)
+    # Excludes the most recent portion of the time range from queries to avoid returning
+    # incomplete results. Required when `live_store.fail_on_high_lag` is enabled.
+    # Must be less than `query_frontend.search.query_backend_after`. 0 disables the cutoff.
+    # (default: 30s)
     [query_end_cutoff: <duration>]
 
     # A list of regular expressions for refusing matching requests, these will apply for every request regardless of the endpoint.
@@ -922,6 +961,11 @@ query_frontend:
     # Max allowed TraceQL expression size, in bytes. queries bigger then this size will be rejected.
     # (default: 128 KiB)
     [max_query_expression_size_bytes: <int> | default = 131072]
+
+    # List of AST transformation names to disable globally for all TraceQL queries.
+    # Possible values: "or_to_in", "all" ("all" disables every transformation).
+    # (default: <empty list>, all transformations enabled)
+    [skip_ast_transformations: <list of strings> | default = []]
 
     search:
         # Maximum number of outstanding requests per tenant per frontend; requests beyond this error with HTTP 429.
@@ -995,12 +1039,18 @@ query_frontend:
     # Trace by ID lookup configuration
     trace_by_id:
         # The number of shards to split a trace by id query into.
+        # (Deprecated, only used when blocks_per_shard is 0)
         # (default: 50)
         [query_shards: <int>]
 
-        # The maximum number of shards to execute at once. If set to 0 query_shards is used.
+        # The maximum number of shards to execute at once. If set to 0 then all are run concurrently.
         # (default: 0)
         [concurrent_shards: <int>]
+
+        # Determines the number of shards dynamically by targeting this number
+        # of blocks per shard. A value of 0 disables this feature and falls back to query_shards.
+        # (default: 30)
+        [blocks_per_shard: <int>]
 
         # Enable external trace source for trace-by-ID queries. When enabled,
         # the frontend will create an additional shard to query the external endpoint
@@ -1122,6 +1172,11 @@ querier:
         # also fetch trace data from an external HTTP endpoint that returns
         # an OpenTelemetry protobuf formatted trace. Enable this feature using
         # query_frontend.trace_by_id.external_enabled.
+        #
+        # The querier limits the external endpoint response size to querier gRPC send-message size
+        # (`querier.frontend_worker.grpc_client_config.max_send_msg_size`, default 16 MiB).
+        # A larger response cannot be returned to the frontend, so the read is bounded to that
+        # limit and the querier returns an error if the external endpoint sends more data than the limit.
         external:
             # The URL of the external service.
             # Example: "http://external-service:3200"
@@ -1842,6 +1897,11 @@ memberlist:
     # is not needed.
     [rejoin_interval: <duration> | default = 0s]
 
+    # Seed nodes to use for periodic rejoin. Takes precedence over join_members
+    # for rejoining. If not specified, join_members is used.
+    # Supports IP, hostname, or DNS Service Discovery format.
+    [rejoin_seed_nodes: <string> | default = ""]
+
     # Timeout for leaving memberlist cluster.
     [leave_timeout: <duration> | default = 20s]
 
@@ -1876,6 +1936,21 @@ memberlist:
     # Timeout for writing 'packet' data.
     [packet_write_timeout: <duration> | default = 5s]
 
+    # Experimental. Tracks how long gossip updates take to propagate across the cluster.
+    propagation_delay_tracker:
+        # Enable the propagation delay tracker.
+        [enabled: <bool> | default = false]
+
+        # How often to publish beacon messages for propagation measurement.
+        [beacon_interval: <duration> | default = 1m]
+
+        # How long a beacon lives before being garbage collected.
+        [beacon_lifetime: <duration> | default = 10m]
+
+        # Log a warning when beacon propagation delay exceeds this threshold.
+        # 0 disables logging.
+        [log_beacons_latency_longer_than: <duration> | default = 0s]
+
 ```
 
 ## Configuration blocks
@@ -1885,8 +1960,7 @@ Defines re-used configuration blocks.
 ### Block
 
 ```yaml
-# block format version. options: vParquet4
-# deprecated options: v2, vParquet3
+# block format version. options: vParquet4, vParquet5
 [version: <string> | default = vParquet4]
 
 # bloom filter false positive rate. lower values create larger filters but fewer false positives
@@ -1894,9 +1968,6 @@ Defines re-used configuration blocks.
 
 # maximum size of each bloom filter shard
 [bloom_filter_shard_size_bytes: <int> | default = 100KiB]
-
-# number of bytes per search page
-[search_page_size_bytes: <int> | default = 1MiB]
 
 # an estimate of the number of bytes per row group when cutting Parquet blocks. lower values will
 #  create larger footers but will be harder to shard when searching. It is difficult to calculate
@@ -1906,7 +1977,7 @@ Defines re-used configuration blocks.
 # Configures attributes to be stored in dedicated columns within the parquet file, rather than in the
 # generic attribute key-value list. This allows for more efficient searching of these attributes.
 # Up to 10 span attributes and 10 resource attributes can be configured as dedicated columns.
-# Requires at least vParquet3
+# Requires vParquet4 or later.
 parquet_dedicated_columns: <list of columns>
 
       # name of the attribute
@@ -2136,7 +2207,7 @@ The storage WAL configuration block.
 # end times.
 # This can result in trace not being found if the trace falls outside the slack configuration value as the
 # start and end times of the block will not be updated in this case.
-[ingestion_time_range_slack: <duration> | default = unset]
+[ingestion_time_range_slack: <duration> | default = 2m]
 ```
 
 ## Overrides
@@ -2210,6 +2281,9 @@ overrides:
       # an average latency of at least artificial_delay.
       [artificial_delay: <duration> | default = 0ms]
 
+      # When enabled, the distributor includes retry information in rate-limit responses.
+      [retry_info_enabled: <bool> | default = true]
+
     # Read related overrides
     read:
       # Maximum size in bytes of a tag-values query. Tag-values query is used mainly
@@ -2237,13 +2311,25 @@ overrides:
       # "008efff798038103d269b633813fc703" to comply with the OpenTelemetry and W3C Trace Context specifications.
       [left_pad_trace_ids: <bool> | default = false]
 
+      # Maximum number of OR-expanded condition groups allowed in a tag search query.
+      # Queries that expand beyond this limit are rejected.
+      [max_condition_groups_per_tag_query: <int> | default = 100]
+
+      # Per-user toggle for unsafe query hints. When enabled, allows query hints that
+      # bypass safety checks.
+      [unsafe_query_hints: <bool> | default = false]
+
+      # Per-user toggle for the span-only fetch layer for TraceQL metrics queries.
+      # When not set, the default behavior is used. May be overridden by query hints.
+      [metrics_spanonly_fetch: <bool>]
+
     # Compaction related overrides
     compaction:
       # Per-user block retention. If this value is set to 0 (default),
       # then block_retention in the compaction configuration is used.
       [block_retention: <duration> | default = 0s]
       # Per-user compaction window. If this value is set to 0 (default),
-      # then block_retention in the compaction configuration is used.
+      # then compaction_window in the compaction configuration is used.
       [compaction_window: <duration> | default = 0s]
       # Allow compaction and retention to be deactivated on a per-tenant basis. Default value
       # is false (compaction active). Useful to perform operations on the backend
@@ -2267,6 +2353,7 @@ overrides:
       # supported:
       #  - service-graphs
       #  - span-metrics
+      #  - host-info
       [processors: <list of strings>]
 
       # Maximum number of active series in the registry, per instance of the metrics-generator. A
@@ -2327,12 +2414,25 @@ overrides:
       [generate_native_histograms: <classic|native|both> | default = classic]
 
       # Enables span name sanitization using DRAIN clustering to reduce cardinality.
-      # Similar span names are clustered together (e.g., "GET /users/123" becomes "GET /users/<*>").
+      # Similar span names are clustered together (e.g., "GET /users/123" becomes "GET /users/<_>").
       # Options:
       #   - "" (empty string): Disabled (default)
       #   - "dry_run": Produces a demand metric for the sanitized cardinality without applying changes
       #   - "enabled": Applies DRAIN clustering to span names
       [span_name_sanitization: <string> | default = ""]
+
+      # Per-tenant headers to include in remote write requests to the metrics backend.
+      [remote_write_headers: <map of string to string>]
+
+      # Bucket growth factor for native histograms. Only applies when
+      # generate_native_histograms is set to "native" or "both".
+      [native_histogram_bucket_factor: <float> | default = 1.1]
+
+      # Maximum number of buckets for native histograms.
+      [native_histogram_max_bucket_number: <int> | default = 100]
+
+      # Minimum duration between native histogram counter resets.
+      [native_histogram_min_reset_duration: <duration> | default = 15m]
 
       # Distributor -> metrics-generator forwarder related overrides
       forwarder:
@@ -2357,7 +2457,7 @@ overrides:
           [filter_policies: [
             [
               include/include_any/exclude:
-                match_type: <string> # options: strict, regexp
+                match_type: <string> # options: strict, regex
                 attributes:
                   - key: <string>
                     value: <any>
@@ -2372,7 +2472,7 @@ overrides:
           [filter_policies: [
             [
               include/include_any/exclude:
-                match_type: <string> # options: strict, regexp
+                match_type: <string> # options: strict, regex
                 attributes:
                   - key: <string>
                     value: <any>
@@ -2385,6 +2485,13 @@ overrides:
           [target_info_excluded_dimensions: <list of string>]
           # add instance label to all span metrics series when enable_target_info is true
           [enable_instance_label: <bool> | default = true]
+
+        # Configuration for the host-info processor
+        host_info:
+          # Attributes used to identify the host. Checked in order until a match is found.
+          [host_identifiers: <list of string> | default = ["k8s.node.name", "host.id"]]
+          # Name of the generated host info metric.
+          [metric_name: <string> | default = "traces_host_info"]
 
     # Generic forwarding configuration
 
@@ -2399,7 +2506,7 @@ overrides:
       # This limit is used in 3 places:
       #  - During search, traces will be skipped when they exceed this threshold.
       #  - During ingestion, traces that exceed this threshold will be refused.
-      #  - During compaction, traces that exceed this threshold will be partially dropped.
+      #  - During compaction (run by backend workers), traces that exceed this threshold will be partially dropped.
       # During ingestion, exceeding the threshold results in errors like
       #    TRACE_TOO_LARGE: max size of trace (5000000) exceeded while adding 387 bytes
       [max_bytes_per_trace: <int> | default = 5000000 (5MB) ]
@@ -2409,7 +2516,7 @@ overrides:
       # Configures attributes to be stored in dedicated columns within the parquet file, rather than in the
       # generic attribute key-value list. This allows for more efficient searching of these attributes.
       # Up to 10 span attributes and 10 resource attributes can be configured as dedicated columns.
-      # Requires at least vParquet3
+      # Requires vParquet4 or later.
       parquet_dedicated_columns:
         [
           name: <string>, # name of the attribute
@@ -2683,6 +2790,12 @@ cache:
             [consistent_hash: <bool>]
 
             # Optional
+            # The maximum size of an item stored in memcached, in bytes.
+            # Bigger items are not stored. A value of 0 disables the limit.
+            # (default: 0)
+            [max_item_size: <int>]
+
+            # Optional
             # Trip circuit-breaker after this number of consecutive dial failures.
             # (default: 10)
             [circuit_breaker_consecutive_failures: 10]
@@ -2770,53 +2883,65 @@ cache:
         # EXPERIMENTAL
         redis:
 
-            # Redis endpoint to use when caching.
+            # Redis Server endpoint to use for caching. A comma-separated list of
+            # endpoints for Redis Cluster or Redis Sentinel.
             [endpoint: <string>]
 
-            # optional.
-            # Maximum time to wait before giving up on redis requests. (default 100ms)
-            [timeout: 500ms]
-
-            # optional.
+            # Optional
             # Redis Sentinel master name. (default "")
-            # Example: "master-name: redis-master"
-            [master-name: <string>]
+            [master_name: <string>]
 
-            # optional.
-            # Database index. (default 0)
-            [db: <int>]
+            # Optional
+            # Maximum time to wait before giving up on redis requests. (default 500ms)
+            [timeout: <duration> | default = 500ms]
 
-            # optional.
+            # Optional
             # How long keys stay in the redis. (default 0)
-            [expiration: <duration>]
+            [expiration: <duration> | default = 0s]
 
-            # optional.
-            # Enable connecting to redis with TLS. (default false)
-            [tls-enabled: <bool>]
+            # Optional
+            # Database index. (default 0)
+            [db: <int> | default = 0]
 
-            # optional.
-            # Skip validating server certificate. (default false)
-            [tls-insecure-skip-verify: <bool>]
-
-            # optional.
+            # Optional
             # Maximum number of connections in the pool. (default 0)
-            [pool-size: <int>]
+            [pool_size: <int> | default = 0]
 
-            # optional.
+            # Optional
+            # Username to use when connecting to redis (Redis 6+ ACL-based AUTH). (default "")
+            [username: <string>]
+
+            # Optional
             # Password to use when connecting to redis. (default "")
             [password: <string>]
 
-            # optional.
-            # Close connections after remaining idle for this duration. (default 0s)
-            [idle-timeout: <duration>]
+            # Optional
+            # Username to use when connecting to redis sentinel. (default "")
+            [sentinel_username: <string>]
 
-            # optional.
-            # Close connections older than this duration. (default 0s)
-            [max-connection-age: <duration>]
-
-            # optional.
+            # Optional
             # Password to use when connecting to redis sentinel. (default "")
             [sentinel_password: <string>]
+
+            # Optional
+            # Enable connecting to redis with TLS. (default false)
+            [tls_enabled: <bool> | default = false]
+
+            # Optional
+            # Skip validating server certificate. (default false)
+            [tls_insecure_skip_verify: <bool> | default = false]
+
+            # Optional
+            # Close connections after remaining idle for this duration. (default 0s)
+            [idle_timeout: <duration> | default = 0s]
+
+            # Optional
+            # Close connections older than this duration. (default 0s)
+            [max_connection_age: <duration> | default = 0s]
+
+            # Optional
+            # TTL for cached keys.
+            [ttl: <duration>]
 ```
 
 Example configuration:
