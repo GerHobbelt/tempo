@@ -487,12 +487,10 @@ metrics_generator:
     override_ring_key: metrics-generator
     ring_mode: partition
     codec: push-bytes
-    disable_grpc: false
     limiter_type: series
     ingest_concurrency: 16
     instance_id: hostname
 ingest:
-    enabled: false
     kafka:
         address: localhost:9092
         topic: ""
@@ -697,7 +695,6 @@ overrides:
             max_bytes_per_tag_values_query: 1000000
         metrics_generator:
             generate_native_histograms: classic
-            ingestion_time_range_slack: 0s
             native_histogram_bucket_factor: 1.1
             native_histogram_max_bucket_number: 100
             native_histogram_min_reset_duration: 15m0s

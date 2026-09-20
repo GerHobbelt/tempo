@@ -1,9 +1,6 @@
 services:
-  # tempo, backend and kafka
   tempo:
     image: grafana/tempo:latest
-    depends_on:
-      - redpanda
     command: "-target=all -config.file=/etc/tempo.yaml"
     restart: always
     volumes:
@@ -28,27 +25,7 @@ services:
       - -euc
       - mkdir -p /data/tempo && minio server /data --console-address ':9001'
 
-  redpanda:
-    image: redpandadata/redpanda:latest
-    ports:
-      - "9092:9092" # Kafka API for clients
-    command: >
-      redpanda start --overprovisioned
-      --mode=dev-container
-      --kafka-addr=PLAINTEXT://0.0.0.0:9092
-      --advertise-kafka-addr=PLAINTEXT://redpanda:9092
-
-  redpanda-console:
-    image: docker.redpanda.com/redpandadata/console:v3.5.0@sha256:b2cbdd93dee412142f95a61488118f33b8e31ea576bfb3ce625fbaffbdf0803a
-    environment:
-      - CONFIG_FILEPATH=/etc/redpanda/redpanda-console-config.yaml
-    volumes:
-      - ./redpanda-console.yaml:/etc/redpanda/redpanda-console-config.yaml
-    ports:
-      - "8080:8080"
-    depends_on:
-      - redpanda
-
+ 
   # ingest pipeline
   k6-tracing:
     image: ghcr.io/grafana/xk6-client-tracing:v0.0.9
@@ -60,7 +37,7 @@ services:
       - alloy
 
   alloy:
-    image: grafana/alloy:v1.14.1@sha256:8f5666aebb871ba43ee2d65159c5d1c26c903720efafaf2d9ed4e237afc3bc88
+    image: grafana/alloy:v1.15.0@sha256:579582bce40049f2e27bd1e445000689c907a41f0495cb0d0c7f65609316ba7c
     volumes:
       - ./config.alloy:/etc/alloy/config.alloy
     command:
@@ -90,7 +67,7 @@ services:
       - "9090:9090"
 
   grafana:
-    image: grafana/grafana:12.4.1@sha256:e932bd6ed0e026595b08483cd0141e5103e1ab7ff8604839ff899b8dc54cabcb
+    image: grafana/grafana:12.4.2@sha256:83749231c3835e390a3144e5e940203e42b9589761f20ef3169c716e734ad505
     volumes:
       - ./grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
     environment:

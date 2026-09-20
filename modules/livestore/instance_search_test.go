@@ -77,7 +77,7 @@ func TestInstanceSearch(t *testing.T) {
 	checkEqual(t, ids, sr)
 
 	// Test after completing a block
-	err = i.completeBlock(t.Context(), blockID)
+	_, err = i.completeBlock(t.Context(), blockID)
 	require.NoError(t, err)
 
 	sr, err = i.Search(t.Context(), req)
@@ -130,7 +130,7 @@ func TestInstanceSearchTraceQL(t *testing.T) {
 			checkEqual(t, ids, sr)
 
 			// Test after completing a block
-			err = i.completeBlock(t.Context(), blockID)
+			_, err = i.completeBlock(t.Context(), blockID)
 			require.NoError(t, err)
 
 			sr, err = i.Search(t.Context(), req)
@@ -192,7 +192,7 @@ func TestInstanceSearchWithStartAndEnd(t *testing.T) {
 	searchAndAssert(req)
 
 	// Test after completing a block
-	err = i.completeBlock(t.Context(), blockID)
+	_, err = i.completeBlock(t.Context(), blockID)
 	require.NoError(t, err)
 	searchAndAssert(req)
 
@@ -237,10 +237,70 @@ func TestInstanceSearchTags(t *testing.T) {
 	testSearchTagsAndValues(t, userCtx, i, tagKey, expectedTagValues)
 
 	// Test after completing a block
-	err = i.completeBlock(t.Context(), blockID)
+	_, err = i.completeBlock(t.Context(), blockID)
 	require.NoError(t, err)
 
 	testSearchTagsAndValues(t, userCtx, i, tagKey, expectedTagValues)
+
+	err = services.StopAndAwaitTerminated(t.Context(), ls)
+	require.NoError(t, err)
+}
+
+func TestSearchTagValuesV2DiskCache(t *testing.T) {
+	i, ls := defaultInstance(t)
+
+	tagKey := foo
+	tagValue := bar
+
+	// Write traces and cut to a complete block
+	_, _, _, _ = writeTracesForSearch(t, i, "", tagKey, tagValue, true, false)
+
+	blockID, err := i.cutBlocks(t.Context(), true)
+	require.NoError(t, err)
+	require.NotEqual(t, uuid.Nil, blockID)
+
+	_, err = i.completeBlock(t.Context(), blockID)
+	require.NoError(t, err)
+
+	userCtx := user.InjectOrgID(t.Context(), testTenantID)
+	req := &tempopb.SearchTagValuesRequest{TagName: "." + tagKey}
+
+	// First query: cache miss, should populate cache
+	resp1, err := i.SearchTagValuesV2(userCtx, req)
+	require.NoError(t, err)
+	require.NotEmpty(t, resp1.TagValues)
+
+	// Verify cache was written on the complete block
+	i.blocksMtx.RLock()
+	var block *LocalBlock
+	for _, b := range i.completeBlocks {
+		block = b
+		break
+	}
+	i.blocksMtx.RUnlock()
+	require.NotNil(t, block)
+
+	limit := i.overrides.MaxBytesPerTagValuesQuery(testTenantID)
+	cacheKey := searchTagValuesV2CacheKey(req, limit, "cache_search_tagvaluesv2")
+	cacheData, err := block.GetDiskCache(t.Context(), cacheKey)
+	require.NoError(t, err)
+	require.NotEmpty(t, cacheData, "disk cache should have been populated after first query")
+
+	// Second query: should hit cache and return same results with lower inspected bytes
+	resp2, err := i.SearchTagValuesV2(userCtx, req)
+	require.NoError(t, err)
+
+	// Cache hit should inspect significantly fewer bytes than the original search
+	require.Less(t, resp2.Metrics.InspectedBytes, resp1.Metrics.InspectedBytes,
+		"cache hit should inspect fewer bytes than cache miss")
+
+	// Sort both for stable comparison
+	sort.Slice(resp1.TagValues, func(a, b int) bool { return resp1.TagValues[a].Value < resp1.TagValues[b].Value })
+	sort.Slice(resp2.TagValues, func(a, b int) bool { return resp2.TagValues[a].Value < resp2.TagValues[b].Value })
+	require.Equal(t, len(resp1.TagValues), len(resp2.TagValues))
+	for idx := range resp1.TagValues {
+		require.Equal(t, resp1.TagValues[idx].Value, resp2.TagValues[idx].Value)
+	}
 
 	err = services.StopAndAwaitTerminated(t.Context(), ls)
 	require.NoError(t, err)
@@ -480,7 +540,7 @@ func TestSearchTagsV2Limits(t *testing.T) {
 				require.NoError(t, err)
 				blockID, err := instance.cutBlocks(t.Context(), true)
 				require.NoError(t, err)
-				err = instance.completeBlock(ctx, blockID)
+				_, err = instance.completeBlock(ctx, blockID)
 				require.NoError(t, err)
 			}
 			expectedTags := len(uniqueKeys)
@@ -593,7 +653,7 @@ func liveStoreWithConfig(t testing.TB, cfg Config) (*LiveStore, error) {
 	logger := test.NewTestingLogger(t)
 
 	// Use fake Kafka cluster for testing
-	liveStore, err := New(cfg, limits, logger, reg, true) // singlePartition = true for testing
+	liveStore, err := New(cfg, limits, noopCompleteBlockFlusher{}, logger, reg)
 	if err != nil {
 		return nil, err
 	}
@@ -759,7 +819,7 @@ func TestInstanceSearchDoesNotRace(t *testing.T) {
 		// Cut wal, complete
 		blockID, _ := i.cutBlocks(t.Context(), true)
 		if blockID != uuid.Nil {
-			err := i.completeBlock(t.Context(), blockID)
+			_, err := i.completeBlock(t.Context(), blockID)
 			require.NoError(t, err)
 		}
 	})
@@ -851,7 +911,7 @@ func TestInstanceSearchMetrics(t *testing.T) {
 	require.Less(t, numBytes, m.InspectedBytes)
 
 	// Test after completing a block
-	err = i.completeBlock(t.Context(), blockID)
+	_, err = i.completeBlock(t.Context(), blockID)
 	require.NoError(t, err)
 	m = search()
 	require.Less(t, numBytes, m.InspectedBytes)
@@ -886,7 +946,7 @@ func TestInstanceFindByTraceID(t *testing.T) {
 	require.NotNil(t, resp.Trace)
 
 	// Test 3: Complete block (moves to completeBlocks)
-	err = i.completeBlock(t.Context(), blockID)
+	_, err = i.completeBlock(t.Context(), blockID)
 	require.NoError(t, err)
 
 	// Verify we can find traces from completed blocks
@@ -1080,7 +1140,9 @@ func TestLiveStoreQueryRange(t *testing.T) {
 	mover, err := overrides.NewOverrides(overrides.Config{}, nil, prometheus.DefaultRegisterer)
 	require.NoError(t, err)
 	// Create instance
-	inst, err := newInstance(tenant, cfg, w, encoding.DefaultEncoding(), mover, log.NewNopLogger())
+	lifecycle, err := newCompleteBlockLifecycle(cfg, noopCompleteBlockFlusher{}, log.NewNopLogger())
+	require.NoError(t, err)
+	inst, err := newInstance(tenant, cfg, w, encoding.DefaultEncoding(), lifecycle, mover, log.NewNopLogger())
 	require.NoError(t, err)
 
 	// Create test spans
@@ -1156,7 +1218,7 @@ func TestLiveStoreQueryRange(t *testing.T) {
 
 	// Complete the block
 	ctx := t.Context()
-	err = inst.completeBlock(ctx, blockID)
+	_, err = inst.completeBlock(ctx, blockID)
 	require.NoError(t, err)
 
 	// Wait a bit to ensure block is ready
