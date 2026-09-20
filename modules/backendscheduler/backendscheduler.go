@@ -153,11 +153,34 @@ func (s *BackendScheduler) starting(ctx context.Context) error {
 			var job *work.Job
 
 			for {
+				var ok bool
 				select {
-				case job = <-jobs:
+				case job, ok = <-jobs:
+					if !ok {
+						// Provider closed its channel (it has stopped); nothing more to forward.
+						level.Info(log.Logger).Log("msg", "provider channel closed", "provider", i)
+						return
+					}
 				case <-ctx.Done():
 					level.Info(log.Logger).Log("msg", "stopping provider", "provider", i)
-					return
+					// The provider channel is buffered: drain any job it already handed off but we
+					// never forwarded, releasing the in-flight count of redaction jobs so it does
+					// not leak on shutdown.
+					for {
+						select {
+						case j, ok := <-jobs:
+							// A closed channel is always ready, so use the two-value receive and
+							// return on close; otherwise this loop would spin forever.
+							if !ok {
+								return
+							}
+							if j != nil && j.GetType() == tempopb.JobType_JOB_TYPE_REDACTION {
+								s.work.ReleaseRedactionInFlight(j.Tenant())
+							}
+						default:
+							return
+						}
+					}
 				}
 
 				select {
@@ -165,6 +188,11 @@ func (s *BackendScheduler) starting(ctx context.Context) error {
 					metricProviderJobsMerged.WithLabelValues(strconv.Itoa(i)).Inc()
 				case <-ctx.Done():
 					level.Info(log.Logger).Log("msg", "stopping provider", "provider", i)
+					// This job was received but not forwarded; if it's a redaction job it was
+					// counted in-flight at dequeue and will never reach Next(), so release it.
+					if job != nil && job.GetType() == tempopb.JobType_JOB_TYPE_REDACTION {
+						s.work.ReleaseRedactionInFlight(job.Tenant())
+					}
 					return
 				}
 			}
@@ -311,9 +339,16 @@ func (s *BackendScheduler) Next(ctx context.Context, req *tempopb.NextJobRequest
 						level.Debug(log.Logger).Log("msg", "dropping redaction job: batch no longer exists",
 							"job_id", j.ID, "tenant", j.Tenant())
 						metricJobsDropped.WithLabelValues(j.Tenant(), j.GetType().String()).Inc()
+						// This job was counted in-flight when NextPendingJob dequeued it; since it is
+						// dropped rather than promoted via AddJob, release that count or it leaks.
+						s.work.ReleaseRedactionInFlight(j.Tenant())
 						drop = true
 					} else if j.JobDetail.Redaction != nil {
+						// Inject the batch's selector (trace IDs or query) and mode so the
+						// worker can resolve and act on the block without re-reading the batch.
 						j.JobDetail.Redaction.TraceIds = batch.TraceIds
+						j.JobDetail.Redaction.Query = batch.Query
+						j.JobDetail.Redaction.Mode = batch.Mode
 					}
 				}
 				if drop {
@@ -385,6 +420,7 @@ func (s *BackendScheduler) UpdateJob(ctx context.Context, req *tempopb.UpdateJob
 			}
 		case tempopb.JobType_JOB_TYPE_REDACTION:
 			if req.Redaction != nil {
+				recordRedactionResult(j.Tenant(), j.JobDetail.GetRedaction().GetMode(), req.Redaction.TracesFound)
 				level.Info(log.Logger).Log("msg", "redaction job result",
 					"job_id", req.JobId,
 					"tenant", j.Tenant(),
@@ -444,14 +480,40 @@ func (s *BackendScheduler) SubmitRedaction(ctx context.Context, req *tempopb.Sub
 		}
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if len(req.TraceIds) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "trace_ids must not be empty")
+	// Exactly one selector: an explicit trace ID list or a TraceQL query, never both.
+	// (The proto reserves a single-member oneof for query; XOR is enforced here until
+	// trace_ids is migrated into the oneof.)
+	querySel := req.GetQuery()
+	hasIDs := len(req.TraceIds) > 0
+	hasQuery := querySel.GetQuery() != "" // nil-safe
+	switch {
+	case hasIDs && hasQuery:
+		return nil, status.Error(codes.InvalidArgument, "trace_ids and query are mutually exclusive")
+	case !hasIDs && !hasQuery:
+		return nil, status.Error(codes.InvalidArgument, "one of trace_ids or query must be set")
+	case hasQuery:
+		if err := validateRedactionQuery(querySel.Query); err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
 	}
+
+	// Reject unknown modes rather than defaulting them to APPLY: since only DRY_RUN is
+	// checked downstream, an unrecognized value would otherwise fall through to a
+	// destructive rewrite. Fail closed.
+	switch req.Mode {
+	case tempopb.RedactionMode_REDACTION_MODE_APPLY, tempopb.RedactionMode_REDACTION_MODE_DRY_RUN:
+	default:
+		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("unknown redaction mode %d", int32(req.Mode)))
+	}
+
 	if s.overrides.CompactionDisabled(tenant) {
 		return nil, status.Error(codes.FailedPrecondition, "compaction is disabled for this tenant")
 	}
 
-	if s.work.TenantPending(tenant) {
+	// One batch per tenant, any mode. GetBatch is the mode-agnostic existence check; a dry-run
+	// does not make TenantPending true, so guarding on TenantPending here would wrongly admit a
+	// second submission over a running dry-run.
+	if s.work.GetBatch(tenant) != nil {
 		return nil, status.Error(codes.AlreadyExists, "a redaction is already in progress for this tenant")
 	}
 
@@ -474,8 +536,8 @@ func (s *BackendScheduler) SubmitRedaction(ctx context.Context, req *tempopb.Sub
 	// can process them — their contents will be merged into a new output block not
 	// yet covered by any pending redaction job. We record the job IDs so the
 	// maintenance loop can look up output blocks once compaction finishes.
-	// Since TenantPending returned false above, there are no active redaction jobs
-	// for this tenant, so busy blocks are exclusively from other providers.
+	// Since GetBatch returned nil above (no batch of any mode), there are no active redaction
+	// jobs for this tenant, so busy blocks are exclusively from other providers.
 	busyBlocks := s.work.BusyBlocksForTenant(tenant)
 
 	skippedJobSet := make(map[string]struct{})
@@ -517,9 +579,15 @@ func (s *BackendScheduler) SubmitRedaction(ctx context.Context, req *tempopb.Sub
 		BatchId:           batchID,
 		TenantId:          tenant,
 		TraceIds:          req.TraceIds,
+		Query:             querySel,
+		Mode:              req.Mode,
 		CreatedAtUnixNano: time.Now().UnixNano(),
 	}
-	if len(skippedJobSet) > 0 {
+	// Only apply-mode batches arm a rescan. A dry-run rewrites nothing, so there is no output
+	// block to re-cover once a skipped compaction finishes; a rescan would only re-count and
+	// inflate the dry-run metric. Blocks busy at submission simply go uncounted (a minor,
+	// documented preview undercount).
+	if len(skippedJobSet) > 0 && !req.Mode.IsDryRun() {
 		skippedJobIDs := make([]string, 0, len(skippedJobSet))
 		for id := range skippedJobSet {
 			skippedJobIDs = append(skippedJobIDs, id)
@@ -564,36 +632,123 @@ func (s *BackendScheduler) SubmitRedaction(ctx context.Context, req *tempopb.Sub
 	}, nil
 }
 
-// cleanupOrphanedBatches sweeps all active batches and removes any whose redaction
-// jobs have all finished. Called after each Prune tick because Prune transitions
-// timed-out running jobs to FAILED by calling j.Fail() directly, bypassing the
-// UpdateJob path that normally invokes cleanupBatchIfDone.
+// cleanupOrphanedBatches sweeps all active batches once per maintenance tick and advances
+// each batch's quiescence: a completed batch enters quiescence, a quiescing batch counts down
+// (and is removed at zero), and a re-activated batch leaves quiescence. Called after each Prune
+// tick because Prune transitions timed-out running jobs to FAILED by calling j.Fail() directly,
+// bypassing the UpdateJob path.
 func (s *BackendScheduler) cleanupOrphanedBatches(ctx context.Context) {
+	changed := false
 	for _, batch := range s.work.ListBatches() {
-		s.cleanupBatchIfDone(ctx, batch.TenantId)
+		// batch.TenantId is immutable; advanceQuiescence reads the mutable fields under lock.
+		if s.advanceQuiescence(batch.TenantId) {
+			changed = true
+		}
+	}
+	// The manifest is a single global file; flush once per tick if anything changed rather
+	// than once per mutated batch.
+	if changed {
+		s.flushBatches(ctx)
 	}
 }
 
-// cleanupBatchIfDone removes the batch manifest for a tenant once all of its redaction
-// jobs have completed or failed (no pending, no in-flight, no running) and no rescan
-// is pending. "In-flight" means a job has been popped from the pending queue and is
-// travelling through the provider channel pipeline but has not yet been promoted to
-// the active job map; we must not discard the batch while such jobs are outstanding
-// or they will be dropped by Next() when they find no batch to resolve trace IDs from.
+// quiescenceSweeps is how many maintenance sweeps' worth of time a completed redaction batch is
+// held before removal. Entry records a deadline of now + quiescenceSweeps × MaintenanceInterval;
+// the batch is removed on the first tick at or after it. Holding the batch keeps the tenant's
+// compaction disabled (TenantPending stays true) long enough for the rescan to catch any block a
+// compaction produced just as the last redaction job finished, closing the cleanup-window race.
+// A deadline (vs a decrementing counter) is static — stable across pod restarts / work reloads —
+// and lets the batch stay unwritten between entry and removal.
+const quiescenceSweeps = 2
+
+// redactionBatchActive reports whether a redaction batch still has outstanding work -- jobs in
+// any state (pending/in-flight/active) or a pending rescan. A batch that is not active is a
+// candidate for quiescence. Both the job-completion path (cleanupBatchIfDone) and the tick path
+// (advanceQuiescence) share this one predicate so their notions of "done" cannot drift.
+// rescanPending is supplied by the caller from a locked batch-store snapshot; batch fields are
+// never read off a live pointer without the store lock (data race).
+func (s *BackendScheduler) redactionBatchActive(tenantID string, rescanPending bool) bool {
+	return s.work.HasJobsForTenant(tenantID, tempopb.JobType_JOB_TYPE_REDACTION) || rescanPending
+}
+
+// cleanupBatchIfDone is called when a batch's redaction jobs may have all finished (e.g. on job
+// completion via UpdateJob). Rather than removing the batch immediately -- which would re-enable
+// compaction before the rescan can cover a late compaction output -- it enters quiescence by
+// recording a quiesce-until deadline; a later maintenance tick (advanceQuiescence) removes it.
+//
+// "In-flight" jobs (popped from the pending queue, travelling the provider channel, not yet
+// promoted to the active map) still count via redactionBatchActive, so the batch is not treated
+// as done while any are outstanding.
 func (s *BackendScheduler) cleanupBatchIfDone(ctx context.Context, tenantID string) {
-	if s.work.HasJobsForTenant(tenantID, tempopb.JobType_JOB_TYPE_REDACTION) {
+	quiesceUntil, rescanPending, dryRun, ok := s.work.BatchQuiescenceState(tenantID)
+	if !ok || s.redactionBatchActive(tenantID, rescanPending) {
 		return
 	}
-	// Do not remove the batch if a rescan is still pending; the maintenance tick
-	// will call checkPendingRescans which will add new pending jobs and clear the flag.
-	if batch := s.work.GetBatch(tenantID); batch != nil && batch.RescanAfterUnixNano > 0 {
+	if dryRun {
+		// A dry-run writes nothing and never disabled compaction, so there is no cleanup-window
+		// race to hold open: remove the batch at once and free the tenant's slot.
+		s.work.RemoveBatch(tenantID)
+		s.flushBatches(ctx)
+		level.Info(log.Logger).Log("msg", "dry-run redaction batch complete, removed", "tenant", tenantID)
 		return
+	}
+	if quiesceUntil == 0 {
+		s.enterQuiescence(tenantID)
+		s.flushBatches(ctx)
+	}
+}
+
+// enterQuiescence records the quiesce-until deadline (now + quiescenceSweeps × MaintenanceInterval)
+// once, leaving compaction disabled until then. It mutates in-memory state only; the caller flushes.
+func (s *BackendScheduler) enterQuiescence(tenantID string) {
+	until := time.Now().Add(quiescenceSweeps * s.cfg.MaintenanceInterval)
+	s.work.SetBatchQuiesceUntil(tenantID, until.UnixNano())
+	level.Info(log.Logger).Log("msg", "redaction batch complete, entering quiescence", "tenant", tenantID, "quiesce_until", until.Format(time.RFC3339))
+}
+
+// advanceQuiescence advances one batch's quiescence on a maintenance tick: a batch re-activated
+// by new jobs or a pending rescan leaves quiescence; a done batch not yet quiescing enters it; a
+// quiescing batch is removed once its deadline passes. Between entry and the deadline it makes no
+// change (returns false), so the manifest is not rewritten on every tick. The caller flushes once
+// per tick if anything changed.
+func (s *BackendScheduler) advanceQuiescence(tenantID string) (changed bool) {
+	quiesceUntil, rescanPending, dryRun, ok := s.work.BatchQuiescenceState(tenantID)
+	if !ok {
+		return false
+	}
+	if s.redactionBatchActive(tenantID, rescanPending) {
+		if quiesceUntil != 0 {
+			s.work.SetBatchQuiesceUntil(tenantID, 0)
+			return true
+		}
+		return false
+	}
+	if dryRun {
+		// Dry-run batches do not quiesce (nothing was written); remove on the tick that finds
+		// them done. Normally cleanupBatchIfDone already handled this on job completion; this
+		// covers a batch that went done without a completion callback (e.g. all jobs dropped).
+		s.work.RemoveBatch(tenantID)
+		level.Info(log.Logger).Log("msg", "dry-run redaction batch complete, removed", "tenant", tenantID)
+		return true
+	}
+	if quiesceUntil == 0 {
+		s.enterQuiescence(tenantID)
+		return true
+	}
+	if time.Now().UnixNano() < quiesceUntil {
+		// Still within the quiescence window; nothing to change this tick.
+		return false
 	}
 	s.work.RemoveBatch(tenantID)
+	level.Info(log.Logger).Log("msg", "redaction batch quiescence complete, manifest removed", "tenant", tenantID)
+	return true
+}
+
+// flushBatches persists the (single, global) batch manifest, best-effort.
+func (s *BackendScheduler) flushBatches(ctx context.Context) {
 	if err := s.work.FlushBatchesToLocal(ctx, s.cfg.LocalWorkPath); err != nil {
-		level.Warn(log.Logger).Log("msg", "failed to flush batch manifest after cleanup", "tenant", tenantID, "err", err)
+		level.Warn(log.Logger).Log("msg", "failed to flush batch manifest", "err", err)
 	}
-	level.Info(log.Logger).Log("msg", "redaction batch completed, manifest removed", "tenant", tenantID)
 }
 
 // checkPendingRescans is called on each maintenance tick. It looks for batches whose

@@ -457,17 +457,68 @@ ingest:
         # The Kafka client ID.
         [client_id: <string>]
 
+        # The rack identifier for this Kafka client. Corresponds to the Kafka client.rack
+        # setting and enables fetching from the closest replica (KIP-392). Set this to the
+        # instance's availability zone to reduce cross-zone Kafka traffic.
+        [client_rack: <string>]
+
         # The maximum time allowed to open a connection to a Kafka broker.
         [dial_timeout: <duration> | default = 2s]
 
         # How long to wait for an incoming write request to be successfully committed to the Kafka backend.
         [write_timeout: <duration> | default = 10s]
 
-        # The SASL username for authentication.
+        # The SASL mechanism used to authenticate to Kafka. Supported values:
+        # PLAIN, SCRAM-SHA-256, SCRAM-SHA-512, OAUTHBEARER, AWS_MSK_IAM.
+        # For backwards-compatibility, PLAIN with no username nor password disables SASL.
+        [sasl_mechanism: <string> | default = "PLAIN"]
+
+        # The username used to authenticate to Kafka using SASL (PLAIN and SCRAM-SHA-* mechanisms).
+        # To enable SASL, configure both the username and password.
         [sasl_username: <string>]
 
-        # The SASL password for authentication.
+        # The password used to authenticate to Kafka using SASL (PLAIN and SCRAM-SHA-* mechanisms).
         [sasl_password: <string>]
+
+        # OAUTHBEARER mechanism: exactly one token source must be configured.
+        # The OAuth token to use to authenticate to Kafka.
+        [sasl_oauthbearer_token: <string>]
+        # Optional authorization ID to use when authenticating.
+        [sasl_oauthbearer_zid: <string>]
+        # Optional additional OAuth extensions, as a map of string to string.
+        [sasl_oauthbearer_extensions: <map<string,string>>]
+        # Path to a file containing a JSON-encoded OAuth token (read on every reauthentication).
+        [sasl_oauthbearer_file_path: <string>]
+        # Path to a Unix domain socket to fetch a JSON-encoded OAuth token from via HTTP.
+        [sasl_oauthbearer_http_socket_path: <string>]
+        # Timeout for requesting the token from the HTTP socket.
+        [sasl_oauthbearer_http_socket_timeout: <duration> | default = 10s]
+
+        # AWS_MSK_IAM mechanism: exactly one credentials source must be configured.
+        # The AWS access key ID.
+        [sasl_msk_iam_access_key: <string>]
+        # The AWS secret access key.
+        [sasl_msk_iam_secret_key: <string>]
+        # Optional AWS session token.
+        [sasl_msk_iam_session_token: <string>]
+        # Optional user agent to send when authenticating.
+        [sasl_msk_iam_user_agent: <string>]
+        # Path to a file containing JSON-encoded AWS credentials (read on every reauthentication).
+        [sasl_msk_iam_file_path: <string>]
+        # Path to a Unix domain socket to fetch JSON-encoded AWS credentials from via HTTP.
+        [sasl_msk_iam_http_socket_path: <string>]
+        # Timeout for requesting AWS credentials from the HTTP socket.
+        [sasl_msk_iam_http_socket_timeout: <duration> | default = 10s]
+
+        # Enable TLS for the Kafka client connection. When enabled, the tls_* options below apply.
+        [tls_enabled: <bool> | default = false]
+        [tls_cert_path: <string>]
+        [tls_key_path: <string>]
+        [tls_ca_path: <string>]
+        [tls_server_name: <string>]
+        [tls_insecure_skip_verify: <bool> | default = false]
+        [tls_cipher_suites: <string>]
+        [tls_min_version: <string>]
 
         # Enable auto-creation of Kafka topic if it doesn't exist.
         [auto_create_topic_enabled: <bool> | default = true]
@@ -482,6 +533,11 @@ ingest:
         # The maximum size of (uncompressed) buffered and unacknowledged produced records sent to Kafka.
         # The produce request fails once this limit is reached. This limit is per Kafka client. 0 to disable.
         [producer_max_buffered_bytes: <int> | default = 1073741824]
+
+        # Compression codec used by the Kafka producer.
+        # Supported values: none, gzip, snappy, lz4, zstd. If not set, the Kafka client's
+        # default codec preference is used.
+        [producer_compression: <string>]
 
         # The consumer group used by the consumer to track the last consumed offset.
         # If the value contains the '<partition>' placeholder, it is replaced with the partition ID.
@@ -734,9 +790,9 @@ metrics_generator:
 
             # Attributes that will be used to create a peer edge
             # Attributes are searched in the order they are provided
-            # See: https://pkg.go.dev/go.opentelemetry.io/otel/semconv/v1.25.0
+            # See: https://opentelemetry.io/docs/specs/semconv/registry/attributes/
             # Example: ["peer.service", "db.name", "db.system", "host.name"]
-            [peer_attributes: <list of string> | default = ["peer.service", "db.name", "db.system"] ]
+            [peer_attributes: <list of string> | default = ["peer.service", "db.name", "db.system", "db.system.name"] ]
 
             # Attribute Key to multiply span metrics
             # Note that the attribute name is searched for in both
@@ -752,8 +808,11 @@ metrics_generator:
             # Enables additional labels for services and virtual nodes.
             [enable_virtual_node_label: <bool> | default = false]
 
-            # List of attribute names used to identify the database name from span attributes. If it isn't set, the order is peer.service -> server.address -> network.peer.address -> db.name
-            [database_name_attributes: <list of string> | default = ["db.namespace","db.name","db.system"]]
+            # List of attribute names used to identify the database name from span attributes.
+            # Attributes are searched in the order they are provided and the first match is used.
+            # The database node itself is named after peer.service -> server.address ->
+            # network.peer.address -> the matching attribute from this list.
+            [database_name_attributes: <list of string> | default = ["db.namespace","db.name","db.system","db.system.name"]]
 
             # List of policies that will be applied to spans for inclusion or exclusion.
             [filter_policies: <list of filter policies config> | default = []]
@@ -897,6 +956,12 @@ metrics_generator:
     # considered in metrics generation.
     # This is to filter out spans that are outdated.
     [metrics_ingestion_time_range_slack: <duration> | default = 30s]
+
+    # When true, on startup the metrics-generator seeks each Kafka partition forward to
+    # (now - metrics_ingestion_time_range_slack) instead of replaying from the committed
+    # offset. This skips backlog that the slack would discard anyway, avoiding wasted work
+    # and a misleading partition-lag spike on restart. Requires Kafka ingest.
+    [skip_stale_backlog_on_startup: <bool> | default = false]
 
     # Overrides the key used to register the metrics-generator in the ring.
     [override_ring_key: <string> | default = "metrics-generator"]
@@ -1119,7 +1184,15 @@ query_frontend:
         # to the v2 endpoint can opt in to span pruning post-processing via the
         # `span_pruning` query parameter. When disabled, the query parameter is ignored
         # and no pruning occurs regardless of the request.
+        # EXPERIMENTAL
         [span_pruning_enabled: <bool> | default = false]
+
+        # Make span pruning default to enabled for trace-by-ID v2 requests that don't set their
+        # own `span_pruning` query parameter. An explicit `span_pruning` value in the request,
+        # true or false, always takes precedence over this default. Only takes effect when
+        # span_pruning_enabled is also true.
+        # EXPERIMENTAL
+        [span_pruning_enabled_by_default: <bool> | default = false]
 
         # If set to a non-zero value, it's value will be used to decide if metadata query is within SLO or not.
         # Query is within SLO if it returned 200 within duration_slo seconds OR processed throughput_slo bytes/s data.
@@ -2040,14 +2113,14 @@ Defines re-used configuration blocks.
 
 # Configures attributes to be stored in dedicated columns within the parquet file, rather than in the
 # generic attribute key-value list. This allows for more efficient searching of these attributes.
-# Up to 10 span attributes and 10 resource attributes can be configured as dedicated columns.
+# Up to 20 string and 5 int attributes can be configured per scope (span, resource, event).
 # Requires vParquet4 or later.
 parquet_dedicated_columns: <list of columns>
 
       # name of the attribute
     - [name: <string>]
 
-      # type of the attribute. options: string
+      # type of the attribute. options: string, int
       [type: <string>]
 
       # scope of the attribute.
@@ -2395,6 +2468,15 @@ overrides:
       # Operator-controlled and not exposed to query authors.
       [span_pruning_awareness: <bool> | default = false]
 
+      # EXPERIMENTAL
+      # Per-tenant override for the query-frontend's span_pruning_enabled_by_default config.
+      # When set, overrides whether span pruning defaults to enabled for trace-by-id v2 requests
+      # that don't set their own span_pruning param. When not set, the cluster-wide config value
+      # is used. Only takes effect when span pruning is enabled cluster-wide (span_pruning_enabled).
+      # Note: this is a per-tenant default override, not a per-tenant kill switch — it has no effect
+      # unless span pruning is already enabled cluster-wide.
+      [span_pruning_enabled: <bool>]
+
     # Compaction related overrides
     compaction:
       # Per-user block retention. If this value is set to 0 (default),
@@ -2597,12 +2679,12 @@ overrides:
     storage:
       # Configures attributes to be stored in dedicated columns within the parquet file, rather than in the
       # generic attribute key-value list. This allows for more efficient searching of these attributes.
-      # Up to 10 span attributes and 10 resource attributes can be configured as dedicated columns.
+      # Up to 20 string and 5 int attributes can be configured per scope (span, resource, event).
       # Requires vParquet4 or later.
       parquet_dedicated_columns:
         [
           name: <string>, # name of the attribute
-          type: <string>, # type of the attribute. options: string
+          type: <string>, # type of the attribute. options: string, int
           scope: <string> # scope of the attribute. options: resource, span
         ]
 
@@ -2868,9 +2950,25 @@ cache:
             [timeout: <duration>]
 
             # Optional
-            # Maximum number of idle connections in pool.
-            # (default: 16)
+            # Maximum time to wait for a connection to a memcached server to be
+            # established. If 0, the value of timeout is used.
+            # (default: 0s)
+            [connect_timeout: <duration>]
+
+            # Optional
+            # Maximum number of idle connections to keep open in the pool per
+            # memcached server. Set higher than the peak number of parallel
+            # requests to keep connections warm across request bursts.
+            # (default: 100)
             [max_idle_conns: <int>]
+
+            # Optional
+            # Percentage of idle connections to keep open when reaping idle
+            # connections, relative to the number of recently used connections.
+            # If negative, idle connections are never closed. If 0, connections
+            # idle for longer than two minutes are closed.
+            # (default: -1)
+            [min_idle_conns_headroom_percentage: <float>]
 
             # Optional
             # Period with which to poll DNS for memcache servers.

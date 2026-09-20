@@ -866,7 +866,9 @@ tempo-cli gen attr-index --add-intrinsics ./path/to/block
 This command is experimental. The output format and behavior may change in future releases.
 {{< /admonition >}}
 
-Compare two local trace JSON files and produce a structural diff in `trace-patch-v0` format. The diff output identifies spans that were added, removed, or modified between a baseline trace and a comparison trace.
+Compare two local trace JSON files. The default `trace-patch-v0` format returns
+the complete mechanical change list. You can instead request a compact native
+summary or a composed summary with a size-bounded patch.
 
 Use this command to compare traces captured at different times or from different environments, for example, to understand how a deployment changed trace structure.
 
@@ -881,11 +883,17 @@ Arguments:
 
 Options:
 
-- `--format <value>` Output format. Currently only `trace-patch-v0` is supported (default).
+- `--format <value>` Output format: `trace-patch-v0` (default), `trace-summary-v0-native`, or `trace-summary-v0-composed`.
 - `-o, --out <path>` File to write output to. If not specified, output is printed to `stdout`.
 - `--pretty` Pretty-print JSON output.
 
 The input files can be either raw OpenTelemetry JSON traces or Tempo `TraceByIDResponse` JSON responses.
+
+The `trace-summary-v0-composed` format always includes a
+`trace-summary-v0-native` document. If
+the serialized `trace-patch-v0` document is no larger than 64 KiB, it is
+included in `patch`. Otherwise, `patchOmitted` reports its size and the reason
+`over_budget`; rerun with `--format trace-patch-v0` to retrieve the full patch.
 
 Example:
 
@@ -898,6 +906,27 @@ Example writing output to a file:
 ```bash
 tempo-cli experimental trace-diff --trace-a baseline.json --trace-b compare.json -o diff-output.json
 ```
+
+Example producing the native summary:
+
+```bash
+tempo-cli experimental trace-diff \
+  --trace-a baseline.json \
+  --trace-b compare.json \
+  --format trace-summary-v0-native \
+  --pretty
+```
+
+The native summary calculates latency, the sum of inclusive span durations,
+topology, and significant per-service duration drift from the normalized traces.
+It combines those values with matcher-derived change and error counts.
+`changedServices` and service rollups cover all matcher changes and significant
+duration drift; `changedServices` also includes structure-only changes, which do
+not have service rollups.
+
+Warnings report partial inputs, high-cardinality span names, duplicate span
+IDs, ambiguous duplicate-span matching, empty traces, and invalid durations.
+Invalid spans contribute zero to summary duration aggregates.
 
 ## Drop traces by ID
 
