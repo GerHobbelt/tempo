@@ -498,6 +498,7 @@ func (t *App) initQueryFrontend() (services.Service, error) {
 
 	// http trace by id endpoint
 	t.Server.HTTPRouter().Handle(addHTTPAPIPrefix(&t.cfg, api.PathTraces), base.Wrap(queryFrontend.TraceByIDHandler))
+	t.Server.HTTPRouter().Handle(addHTTPAPIPrefix(&t.cfg, api.PathTraceDiffV2), base.Wrap(queryFrontend.TraceDiffHandler))
 	t.Server.HTTPRouter().Handle(addHTTPAPIPrefix(&t.cfg, api.PathTracesV2), base.Wrap(queryFrontend.TraceByIDHandlerV2))
 
 	// http search endpoints
@@ -566,7 +567,8 @@ func (t *App) initMemberlistKV() (services.Service, error) {
 		),
 	)
 
-	dnsProvider := dns.NewProvider(log.Logger, dnsProviderReg, dns.GolangResolverType)
+	// maxIdleConnections only applies to the miekgdns resolver, unused with GolangResolverType
+	dnsProvider := dns.NewProvider(dns.GolangResolverType, 0, log.Logger, dnsProviderReg)
 	t.MemberlistKV = memberlist.NewKVInitService(&t.cfg.MemberlistKV, log.Logger, dnsProvider, reg)
 
 	t.cfg.Generator.Ring.KVStore.MemberlistKV = t.MemberlistKV.GetMemberlistKV

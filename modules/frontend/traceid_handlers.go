@@ -70,7 +70,7 @@ func newTraceIDHandler(cfg Config, next pipeline.AsyncRoundTripper[combiner.Pipe
 		postSLOHook(resp, tenant, inspectBytes, elapsed, err)
 
 		traceID, _ := tracing.ExtractTraceID(req.Context())
-		level.Info(logger).Log(
+		logWithShape(level.Info(logger), req.Context(),
 			"msg", "trace id response",
 			"tenant", tenant,
 			"traceID", traceID,
@@ -78,14 +78,15 @@ func newTraceIDHandler(cfg Config, next pipeline.AsyncRoundTripper[combiner.Pipe
 			"duration_seconds", elapsed.Seconds(),
 			"inspected_bytes", inspectBytes,
 			"request_throughput", float64(inspectBytes)/elapsed.Seconds(),
-			"err", err)
+			"err", err,
+		)
 
 		return resp, err
 	})
 }
 
 // newTraceIDV2Handler creates a http.handler for trace by id requests
-func newTraceIDV2Handler(cfg Config, next pipeline.AsyncRoundTripper[combiner.PipelineResponse], o overrides.Interface, combinerFn func(int, api.MarshallingFormat, combiner.TraceRedactor) combiner.GRPCCombiner[*tempopb.TraceByIDResponse], logger log.Logger, dataAccessController DataAccessController) http.RoundTripper {
+func newTraceIDV2Handler(cfg Config, next pipeline.AsyncRoundTripper[combiner.PipelineResponse], o overrides.Interface, combinerFn func(int, api.MarshallingFormat, combiner.TraceRedactor, combiner.TraceByIDV2Options) combiner.GRPCCombiner[*tempopb.TraceByIDResponse], logger log.Logger, dataAccessController DataAccessController) http.RoundTripper {
 	postSLOHook := traceByIDSLOPostHook(cfg.TraceByID.SLO)
 
 	return RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
@@ -126,7 +127,24 @@ func newTraceIDV2Handler(cfg Config, next pipeline.AsyncRoundTripper[combiner.Pi
 			}
 		}
 
-		comb := combinerFn(o.MaxBytesPerTrace(tenant), marshallingFormat, traceRedactor)
+		var (
+			opts               combiner.TraceByIDV2Options
+			spanPruningEnabled bool
+		)
+		// only parse span_pruning_* params when the feature is enabled cluster-wide, so a
+		// malformed param doesn't 400 a request for a feature that's actually turned off.
+		if cfg.TraceByID.SpanPruningEnabled {
+			spanPruningEnabled, spanPruningCfg, pErr := api.ParseSpanPruningRequest(req)
+			if pErr != nil {
+				return httpInvalidRequest(pErr), nil
+			}
+			if spanPruningEnabled && spanPruningCfg != nil {
+				opts.SpanPruningConfig = spanPruningCfg
+				opts.Logger = logger
+			}
+		}
+
+		comb := combinerFn(o.MaxBytesPerTrace(tenant), marshallingFormat, traceRedactor, opts)
 		rt := pipeline.NewHTTPCollector(next, cfg.ResponseConsumers, comb)
 
 		start := time.Now()
@@ -142,7 +160,7 @@ func newTraceIDV2Handler(cfg Config, next pipeline.AsyncRoundTripper[combiner.Pi
 		postSLOHook(resp, tenant, bytesProcessed, elapsed, err)
 
 		traceID, _ := tracing.ExtractTraceID(req.Context())
-		level.Info(logger).Log(
+		logWithShape(level.Info(logger), req.Context(),
 			"msg", "trace id response",
 			"tenant", tenant,
 			"traceID", traceID,
@@ -150,7 +168,9 @@ func newTraceIDV2Handler(cfg Config, next pipeline.AsyncRoundTripper[combiner.Pi
 			"inspected_bytes", bytesProcessed,
 			"request_throughput", float64(bytesProcessed)/elapsed.Seconds(),
 			"duration_seconds", elapsed.Seconds(),
-			"err", err)
+			"span_pruning_enabled", spanPruningEnabled,
+			"err", err,
+		)
 
 		return resp, err
 	})

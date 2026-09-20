@@ -13,8 +13,11 @@ import (
 	"unsafe"
 
 	"github.com/parquet-go/parquet-go"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/grafana/tempo/pkg/parquetquery"
+	"github.com/grafana/tempo/pkg/sampling"
 	v1 "github.com/grafana/tempo/pkg/tempopb/trace/v1"
 	"github.com/grafana/tempo/pkg/traceql"
 	"github.com/grafana/tempo/pkg/util"
@@ -1000,6 +1003,7 @@ const (
 	columnPathInstrumentationAttrDouble = "rs.ss.Scope.Attrs.ValueDouble"
 	columnPathInstrumentationAttrBool   = "rs.ss.Scope.Attrs.ValueBool"
 
+	columnPathSpanTraceState       = "rs.ss.Spans.TraceState"
 	columnPathSpanID               = "rs.ss.Spans.SpanID"
 	ColumnPathSpanName             = "rs.ss.Spans.Name"
 	columnPathSpanStartTime        = "rs.ss.Spans.StartTimeUnixNano"
@@ -1071,6 +1075,7 @@ var intrinsicColumnLookups = map[traceql.Intrinsic]struct {
 	traceql.IntrinsicNestedSetRight:       {intrinsicScopeSpan, traceql.TypeInt, columnPathSpanNestedSetRight},
 	traceql.IntrinsicNestedSetParent:      {intrinsicScopeSpan, traceql.TypeInt, columnPathSpanParentID},
 	traceql.IntrinsicChildCount:           {intrinsicScopeSpan, traceql.TypeInt, columnPathSpanChildCount},
+	traceql.IntrinsicSpanMultiplier:       {intrinsicScopeSpan, traceql.TypeFloat, columnPathSpanTraceState},
 
 	traceql.IntrinsicTraceRootService: {intrinsicScopeTrace, traceql.TypeString, columnPathRootServiceName},
 	traceql.IntrinsicTraceRootSpan:    {intrinsicScopeTrace, traceql.TypeString, columnPathRootSpanName},
@@ -1104,6 +1109,16 @@ var wellKnownColumnLookups = map[string]struct {
 // internal consistencies:  operand count matches the operation, all operands in each condition are identical
 // types, and the operand type is compatible with the operation.
 func (b *backendBlock) Fetch(ctx context.Context, req traceql.FetchSpansRequest, opts common.SearchOptions) (traceql.FetchSpansResponse, error) {
+	ctx, span := tracer.Start(ctx, "parquet.backendBlock.Fetch", trace.WithAttributes(
+		attribute.String("blockID", b.meta.BlockID.String()),
+		attribute.String("tenantID", b.meta.TenantID),
+		attribute.Int64("blockSize", int64(b.meta.Size_)),
+		attribute.Int("numConditions", len(req.Conditions)),
+		attribute.Bool("allConditions", req.AllConditions),
+		attribute.Bool("secondPassSelectAll", req.SecondPassSelectAll),
+	))
+	defer span.End()
+
 	err := checkConditions(req.Conditions)
 	if err != nil {
 		return traceql.FetchSpansResponse{}, fmt.Errorf("conditions invalid: %w", err)
@@ -1123,9 +1138,22 @@ func (b *backendBlock) Fetch(ctx context.Context, req traceql.FetchSpansRequest,
 		return traceql.FetchSpansResponse{}, fmt.Errorf("creating fetch iter: %w", err)
 	}
 
+	// The span covers planning and iterator creation. The iterator is consumed
+	// lazily by the caller after this function returns; the deferred attribute
+	// below reads rr.BytesRead() at function exit (before iteration), so
+	// inspectedBytes on the span will under-report relative to the true bytes
+	// read during iteration. Cumulative bytes are available via Stats() on the
+	// returned response. This matches the existing backendBlock.Search pattern.
+	defer func() {
+		span.SetAttributes(attribute.Int64("inspectedBytes", int64(rr.BytesRead())))
+	}()
+
 	return traceql.FetchSpansResponse{
 		Results: iter,
-		Bytes:   func() uint64 { return rr.BytesRead() },
+		Stats: func() traceql.FetchSpansStats {
+			// TODO(issue/1274): populate per-iterator and per-role counters.
+			return traceql.FetchSpansStats{Bytes: rr.BytesRead()}
+		},
 	}, nil
 }
 
@@ -2188,6 +2216,14 @@ func createSpanIterator(makeIter, makeNilIter makeIterFn, innerIterators []parqu
 			addPredicate(columnPathSpanChildCount, pred)
 			columnSelectAs[columnPathSpanChildCount] = columnPathSpanChildCount
 			continue
+		case traceql.IntrinsicSpanMultiplier:
+			// IntrinsicSpanMultiplier is a synthetic float intrinsic derived from
+			// the W3C tracestate (ot=th:...). Storage just surfaces the raw
+			// TraceState column; the iterator callback parses it into a float.
+			// Only OpNone (projection) is supported.
+			addPredicate(columnPathSpanTraceState, nil)
+			columnSelectAs[columnPathSpanTraceState] = columnPathSpanTraceState
+			continue
 		}
 
 		// Attributes stored in dedicated columns
@@ -2246,7 +2282,8 @@ func createSpanIterator(makeIter, makeNilIter makeIterFn, innerIterators []parqu
 				traceql.IntrinsicStructuralSibling,
 				traceql.IntrinsicNestedSetLeft,
 				traceql.IntrinsicNestedSetRight,
-				traceql.IntrinsicNestedSetParent:
+				traceql.IntrinsicNestedSetParent,
+				traceql.IntrinsicSpanMultiplier: // synthetic; explicitly requested by metrics queries
 				continue
 			}
 			addPredicate(entry.columnPath, nil)
@@ -3279,6 +3316,20 @@ func (c *spanCollector) KeepGroup(res *parquetquery.IteratorResult) bool {
 			}
 		case columnPathSpanChildCount:
 			sp.addSpanAttr(traceql.IntrinsicChildCountAttribute, traceql.NewStaticInt(int(kv.Value.Int32())))
+		case columnPathSpanTraceState:
+			// Parse OTel probability sampling threshold once per span. When
+			// the tracestate carries an OTEP-235 R-value (`rv:` field), we
+			// use it to stochastically round the multiplier to an integer
+			// so count-style aggregates emit whole-number contributions.
+			// Falls back to the raw float multiplier when no R-value is
+			// present, and to 1.0 when the tracestate is absent or
+			// unparseable. Also surfaced as a span attribute so the engine
+			// reads it via AttributeFor and it counts toward attributesMatched().
+			m := sampling.MultiplierFromTraceState(unsafeToString(kv.Value.Bytes()))
+			if m <= 0 {
+				m = 1.0
+			}
+			sp.addSpanAttr(traceql.IntrinsicSpanMultiplierAttribute, traceql.NewStaticFloat(m))
 		default:
 			// TODO - This exists for span-level dedicated columns like http.status_code
 			// Are nils possible here?

@@ -16,8 +16,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/grafana/dskit/httpgrpc"
+	spanpruningprocessor "github.com/open-telemetry/opentelemetry-collector-contrib/processor/spanpruningprocessor"
 	"github.com/prometheus/common/model"
 
+	"github.com/grafana/tempo/pkg/model/tracediff"
 	"github.com/grafana/tempo/pkg/tempopb"
 	"github.com/grafana/tempo/pkg/traceql"
 	"github.com/grafana/tempo/pkg/util"
@@ -32,6 +34,7 @@ const (
 	urlParamMinDuration     = "minDuration"
 	urlParamMaxDuration     = "maxDuration"
 	urlParamLimit           = "limit"
+	urlParamMaxStaleValues  = "maxStaleValues"
 	urlParamStart           = "start"
 	urlParamEnd             = "end"
 	urlParamSpansPerSpanSet = "spss"
@@ -53,6 +56,12 @@ const (
 	urlParamDedicatedColumns = "dc"
 
 	urlParamSkipASTTransformations = "skip_ast_transformations"
+
+	// span pruning
+	urlParamSpanPruning               = "span_pruning"
+	urlParamSpanPruningGroupBy        = "span_pruning_group_by"
+	urlParamSpanPruningMinSpans       = "span_pruning_min_spans"
+	urlParamSpanPruningMaxParentDepth = "span_pruning_max_parent_depth"
 
 	// search tags
 	urlParamScope = "scope"
@@ -82,6 +91,7 @@ const (
 
 	PathSearchTagValuesV2 = "/api/v2/search/tag/" + MuxVarTagInPath + "/values"
 	PathSearchTagsV2      = "/api/v2/search/tags"
+	PathTraceDiffV2       = "/api/v2/traces/diff"
 	PathTracesV2          = "/api/v2/traces/{traceID}"
 
 	QueryModeKey       = "mode"
@@ -105,6 +115,24 @@ const (
 	MarshallingFormatJSON     MarshallingFormat = HeaderAcceptJSON
 	MarshallingFormatLLM      MarshallingFormat = HeaderAcceptLLM
 )
+
+// TraceDiffRequest is the request body for the trace diff API.
+type TraceDiffRequest struct {
+	Base    TraceDiffTraceRequest `json:"base"`
+	Compare TraceDiffTraceRequest `json:"compare"`
+	Format  string                `json:"-"`
+}
+
+// TraceDiffTraceRequest identifies one side of a trace diff request.
+type TraceDiffTraceRequest struct {
+	TraceID string `json:"traceId"`
+	Start   *int64 `json:"start,omitempty"`
+	End     *int64 `json:"end,omitempty"`
+
+	TraceIDBytes []byte    `json:"-"`
+	StartTime    time.Time `json:"-"`
+	EndTime      time.Time `json:"-"`
+}
 
 // MarshalingFormatFromAcceptHeader extracts the marshaling format from the Accept header
 // It properly handles multiple media types and quality values
@@ -784,6 +812,49 @@ func extractDateRangeParams(vals url.Values) (start, end, since string) {
 	return
 }
 
+// ParseTraceDiffRequest parses and validates the trace diff API request body.
+func ParseTraceDiffRequest(r *http.Request) (*TraceDiffRequest, error) {
+	var req TraceDiffRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return nil, fmt.Errorf("invalid trace diff request body: %w", err)
+	}
+
+	req.Format = tracediff.VersionTracePatchV0
+
+	if err := parseTraceDiffTraceRequest("base", &req.Base); err != nil {
+		return nil, err
+	}
+	if err := parseTraceDiffTraceRequest("compare", &req.Compare); err != nil {
+		return nil, err
+	}
+
+	return &req, nil
+}
+
+func parseTraceDiffTraceRequest(name string, traceReq *TraceDiffTraceRequest) error {
+	if traceReq.TraceID == "" {
+		return fmt.Errorf("%s.traceId is required", name)
+	}
+
+	traceID, err := util.HexStringToTraceID(traceReq.TraceID)
+	if err != nil {
+		return fmt.Errorf("invalid %s.traceId: %w", name, err)
+	}
+	traceReq.TraceIDBytes = traceID
+
+	if traceReq.Start != nil {
+		traceReq.StartTime = time.Unix(*traceReq.Start, 0)
+	}
+	if traceReq.End != nil {
+		traceReq.EndTime = time.Unix(*traceReq.End, 0)
+	}
+	if traceReq.Start != nil && traceReq.End != nil && *traceReq.End <= *traceReq.Start {
+		return fmt.Errorf("%s.start must be before %s.end. received start=%d end=%d", name, name, *traceReq.Start, *traceReq.End)
+	}
+
+	return nil
+}
+
 // ParseTraceByIDRequest parses and validates params for the trace by id API.
 // return values are (blockStart, blockEnd, queryMode, start, end, error)
 // start and end are zero time.Time values when not provided by the caller.
@@ -878,4 +949,52 @@ func ReadBodyToBuffer(resp *http.Response) (*bytes.Buffer, error) {
 	}
 
 	return buffer, nil
+}
+
+func ParseSpanPruningRequest(r *http.Request) (bool, *spanpruningprocessor.Config, error) {
+	raw := r.URL.Query().Get(urlParamSpanPruning)
+	if raw == "" {
+		return false, nil, nil
+	}
+
+	spanPruningEnabled, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, nil, fmt.Errorf("invalid %s value %q: must be a boolean", urlParamSpanPruning, raw)
+	}
+
+	if !spanPruningEnabled {
+		return false, nil, nil
+	}
+
+	cfg := spanpruningprocessor.NewFactory().CreateDefaultConfig().(*spanpruningprocessor.Config)
+
+	if v := r.URL.Query().Get(urlParamSpanPruningGroupBy); v != "" {
+		var patterns []string
+		for _, p := range strings.Split(v, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				patterns = append(patterns, p)
+			}
+		}
+		cfg.GroupByAttributes = patterns
+	}
+	if v := r.URL.Query().Get(urlParamSpanPruningMinSpans); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return false, nil, fmt.Errorf("invalid %s value %q: %w", urlParamSpanPruningMinSpans, v, err)
+		}
+		cfg.MinSpansToAggregate = n
+	}
+	if v := r.URL.Query().Get(urlParamSpanPruningMaxParentDepth); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return false, nil, fmt.Errorf("invalid %s value %q: %w", urlParamSpanPruningMaxParentDepth, v, err)
+		}
+		cfg.MaxParentDepth = n
+	}
+
+	if err := cfg.Validate(); err != nil {
+		return false, nil, fmt.Errorf("invalid span pruning config: %w", err)
+	}
+
+	return true, cfg, nil
 }

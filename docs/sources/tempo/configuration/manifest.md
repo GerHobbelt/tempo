@@ -363,7 +363,7 @@ query_frontend:
         max_regex_conditions: 1
     mcp_server:
         enabled: false
-    max_grpc_streaming_packet_size: 2097152
+    max_grpc_streaming_packet_size: 1048576
     max_query_expression_size_bytes: 131072
     query_end_cutoff: 30s
 metrics_generator:
@@ -794,6 +794,8 @@ memberlist:
     compression_enabled: false
     notify_interval: 0s
     received_messages_queue_size: 1024
+    processed_messages_queue_size: 1024
+    compression_algorithm: lzw
     advertise_addr: ""
     advertise_port: 7946
     cluster_label: ""

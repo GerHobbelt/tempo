@@ -23,6 +23,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/go-kit/log/level"
+	"github.com/grafana/tempo/modules/overrides"
 	"github.com/grafana/tempo/pkg/api"
 	"github.com/grafana/tempo/pkg/boundedwaitgroup"
 	"github.com/grafana/tempo/pkg/collector"
@@ -249,6 +250,7 @@ func (i *instance) Search(ctx context.Context, req *tempopb.SearchRequest) (*tem
 			for _, name := range req.SkipASTTransformations {
 				searchOpts = append(searchOpts, traceql.WithSkipOptimization(name))
 			}
+			searchOpts = append(searchOpts, overrides.SpanPruningAwarenessCompileOptions(i.overrides.SpanPruningAwareness(i.tenantID))...)
 			resp, err = traceql.NewEngine().ExecuteSearch(ctx, req, f, searchOpts...)
 		} else {
 			resp, err = b.Search(ctx, req, opts)
@@ -551,41 +553,38 @@ func (i *instance) SearchTagValuesV2(ctx context.Context, req *tempopb.SearchTag
 		// pulled from context to add attrs below
 		span := oteltrace.SpanFromContext(ctx)
 
-		// check the cache first
+		// check the cache first. GetDiskCache maps a cache miss to (nil, nil), so a
+		// non-nil error here is a real read failure. Either way we fall through to
+		// search the block rather than dropping its values from the response.
 		cacheData, err := localB.GetDiskCache(ctx, cacheKey)
 		if err != nil {
-			// just log the error and move on...we will search the block
 			_ = level.Warn(i.logger).Log("msg", "GetDiskCache failed", "err", err)
-			return nil
+			cacheData = nil
 		}
 
 		// we got data...unmarshall, and add values to central collector and add bytesRead
 		if len(cacheData) > 0 {
 			resp := &tempopb.SearchTagValuesV2Response{}
-			err = proto.Unmarshal(cacheData, resp)
-			if err != nil {
+			if err := proto.Unmarshal(cacheData, resp); err != nil {
+				// corrupt cache entry: log and fall through to search the block below
 				_ = level.Warn(i.logger).Log("msg", "GetDiskCache unmarshal failed", "err", err)
+			} else {
+				span.SetAttributes(attribute.Bool("cached", true))
+				// On a cache hit we only read the cache file, so report its size as the
+				// inspected bytes for this block. The cached payload stores only TagValues
+				// (not Metrics), so the original scan's byte count isn't available here.
+				mCollector.Add(uint64(len(cacheData)))
+
+				for _, v := range resp.TagValues {
+					if vCollector.Collect(*v) {
+						return errComplete
+					}
+				}
 				return nil
 			}
-
-			span.SetAttributes(attribute.Bool("cached", true))
-			// Instead of the reporting the InspectedBytes of the cached response.
-			// we report the size of cacheData as the Inspected bytes in case we hit disk cache.
-			// we do this because, because it's incorrect and misleading to report the metrics of cachedResponse
-			// we report the size of the cacheData as the amount of data was read to search this block.
-			// this can skew our metrics because this will be lower than the data read to search the block.
-			// we can remove this if this becomes an issue but leave it in for now to more accurate.
-			mCollector.Add(uint64(len(cacheData)))
-
-			for _, v := range resp.TagValues {
-				if vCollector.Collect(*v) {
-					return errComplete
-				}
-			}
-			return nil
 		}
 
-		// cache miss, search the block. We will cache the results if we find any.
+		// cache miss or unusable cache entry, search the block. We will cache the results if we find any.
 		span.SetAttributes(attribute.Bool("cached", false))
 		// using local collector to collect values from the block and cache them.
 		localCol := collector.NewDistinctValue[tempopb.TagValue](limit, req.MaxTagValues, req.StaleValueThreshold, func(v tempopb.TagValue) int { return len(v.Type) + len(v.Value) })
@@ -638,6 +637,9 @@ func (i *instance) SearchTagValuesV2(ctx context.Context, req *tempopb.SearchTag
 }
 
 func (i *instance) FindByTraceID(ctx context.Context, traceID []byte, allowPartialTrace bool) (*tempopb.TraceByIDResponse, error) {
+	// TODO(issue/1274): populate metrics.BackendReads / BackendBytes / AdditionalMetrics
+	// from per-block FetchSpansStats. The new proto fields exist (Task B) but the
+	// trace-by-ID path here still only reports InspectedBytes.
 	var (
 		metricsMtx sync.Mutex
 		metrics    = tempopb.TraceByIDMetrics{}
@@ -737,6 +739,8 @@ func (i *instance) QueryRange(ctx context.Context, req *tempopb.QueryRangeReques
 		compileOpts = append(compileOpts, traceql.WithSpanOnlyFetch(*p))
 	}
 
+	compileOpts = append(compileOpts, overrides.SpanPruningAwarenessCompileOptions(i.overrides.SpanPruningAwareness(i.tenantID))...)
+
 	// Compile the raw version of the query for head and wal blocks
 	// These aren't cached and we put them all into the same evaluator
 	// for efficiency.
@@ -805,12 +809,17 @@ func (i *instance) QueryRange(ctx context.Context, req *tempopb.QueryRangeReques
 	r := jobEval.Results()
 	rr := r.ToProto(req)
 
-	rawBytes, _, _ := rawEval.Metrics()
-	inspectedBytes.Add(rawBytes)
+	rawEm := rawEval.Metrics()
+	inspectedBytes.Add(rawEm.Bytes)
 	totalBytes := inspectedBytes.Load()
 	metricQueryInspectedBytesTotal.WithLabelValues(i.tenantID, queryOpQueryRange).Add(float64(totalBytes))
 
-	respMetrics := &tempopb.SearchMetrics{InspectedBytes: totalBytes}
+	respMetrics := &tempopb.SearchMetrics{
+		InspectedBytes:    totalBytes,
+		BackendReads:      rawEm.BackendReads,
+		BackendBytes:      rawEm.BackendBytes,
+		AdditionalMetrics: rawEm.AdditionalMetrics,
+	}
 
 	if maxSeriesReached.Load() {
 		return &tempopb.QueryRangeResponse{
@@ -897,7 +906,7 @@ func (i *instance) queryRangeCompleteBlock(ctx context.Context, b *LocalBlock, r
 	}
 
 	results := eval.Results().ToProto(&req)
-	inspectedBytes, _, _ := eval.Metrics()
+	inspectedBytes := eval.Metrics().Bytes
 
 	if err := i.queryRangeCacheSet(ctx, m, name, &tempopb.QueryRangeResponse{
 		Series: results,
@@ -996,6 +1005,8 @@ func searchTagValuesV2CacheKey(req *tempopb.SearchTagValuesRequest, limit int, p
 	h := fnv1a.HashString64(req.TagName)
 	h = fnv1a.AddString64(h, cacheKey)
 	h = fnv1a.AddUint64(h, uint64(limit))
+	h = fnv1a.AddUint64(h, uint64(req.MaxTagValues))
+	h = fnv1a.AddUint64(h, uint64(req.StaleValueThreshold))
 
 	return fmt.Sprintf("%s_%v.buf", prefix, h)
 }
