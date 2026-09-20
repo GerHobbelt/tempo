@@ -45,7 +45,7 @@ jobs:
         run: echo "date=$(date +"%Yweek%U")" >> $GITHUB_OUTPUT
 
       - name: cache golangci
-        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           path: .cache/golangci-lint
           key: golangci-lint-${{ runner.os }}-${{ steps.get-year-week-number.outputs.date }}-${{ hashFiles('go.mod', '.golangci.yml') }}
@@ -189,6 +189,36 @@ jobs:
 
       - name: generate-manifest
         run: make generate-manifest
+
+      - name: Build tempo-query
+        run: make tempo-query
+
+      - name: Build vulture
+        run: make tempo-vulture
+
+      - name: Build tempo-cli
+        run: make tempo-cli
+
+  build-riscv64:
+    name: Build (riscv64 cross-compilation)
+    runs-on: ubuntu-24.04
+    env:
+      GOARCH: riscv64
+      GOOS: linux
+      CGO_ENABLED: "0"
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Build Tempo
+        run: make tempo
 
       - name: Build tempo-query
         run: make tempo-query
