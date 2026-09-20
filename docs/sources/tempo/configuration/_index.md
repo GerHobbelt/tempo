@@ -2098,7 +2098,7 @@ Defines re-used configuration blocks.
 
 ```yaml
 # block format version. options: vParquet4, vParquet5
-[version: <string> | default = vParquet4]
+[version: <string> | default = vParquet5]
 
 # bloom filter false positive rate. lower values create larger filters but fewer false positives
 [bloom_filter_false_positive: <float> | default = 0.01]
@@ -2457,9 +2457,10 @@ overrides:
       # bypass safety checks.
       [unsafe_query_hints: <bool> | default = false]
 
-      # Per-user toggle for the span-only fetch layer for TraceQL metrics queries.
-      # When not set, the default behavior is used. May be overridden by query hints.
-      [metrics_spanonly_fetch: <bool>]
+      # Per-user toggle for the span-only fetch layer for TraceQL metrics queries,
+      # which is enabled by default. Set to false to opt out for the tenant.
+      # May be overridden by query hints.
+      [metrics_spanonly_fetch: <bool> | default = true]
 
       # EXPERIMENTAL
       # When enabled, queries report an additional metric indicating whether the
@@ -2469,6 +2470,11 @@ overrides:
       [span_pruning_awareness: <bool> | default = false]
 
       # EXPERIMENTAL
+      # Per-user toggle for tracking encoded attribute bytes on matched spans,
+      # reported as an additional query metric. When not set, the cluster-wide
+      # default is used.
+      [engine_bytes_tracking: <bool>]
+
       # Per-tenant override for the query-frontend's span_pruning_enabled_by_default config.
       # When set, overrides whether span pruning defaults to enabled for trace-by-id v2 requests
       # that don't set their own span_pruning param. When not set, the cluster-wide config value
@@ -2854,7 +2860,7 @@ For guidance on sizing these limits for your workload, refer to [Manage trace in
 
 By default, Tempo reports anonymous usage data about the shape of a deployment to Grafana Labs.
 This data is used to determine how common the deployment of certain features are, if a feature flag has been enabled,
-and which replication factor or compression levels are used.
+and which replication factors or block formats are used.
 
 By providing information on how people use Tempo, usage reporting helps the Tempo team decide where to focus their development and documentation efforts. No private information is collected, and all reports are completely anonymous.
 
@@ -2862,7 +2868,7 @@ The following configuration values are used:
 
 - Receivers enabled
 - Frontend concurrency and version
-- Storage cache, backend, WAL and block encodings
+- Storage cache, backend, and configured block format
 - Ring replication factor, and `kvstore`
 - Features toggles enabled
 

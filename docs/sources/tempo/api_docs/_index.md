@@ -204,6 +204,12 @@ Span pruning is experimental. The `span_pruning*` parameters, their behavior, an
   Optional. A single TraceQL spanset filter (for example `{ span.http.status_code = 500 }`) that returns only the matching spans. When it drops spans, the response status is `PARTIAL` to signal a subset. Only a single `{ ... }` filter is supported: pipelines, structural operators, metrics queries, trace-level intrinsics, and trace-scoped attributes return a `400`, and an absent or empty `q` returns the full trace.
 - `keep_hierarchy = (bool)`
   Optional. When `true`, the response also includes the ancestor path from the root spans to each matched span, so the result is still a complete hierarchy that can be rendered as a waterfall. Defaults to `false` (only the spans matching `q`). Ignored when `q` isn't set.
+- `match_depth = (int)`
+  Optional. How many levels of descendants to keep below each span matched by `q`, independent of `keep_hierarchy`. Use `-1` for the full subtree, `0` for the matched spans alone, or `n` (`n >= 1`) to keep levels 1 (direct children) through `n`. Values below `-1` are invalid and return a `400`. Ignored when `q` isn't set.
+  Default = `0`
+- `ancestor_depth = (int)`
+  Optional. How many levels of ancestors to keep above each matched span. Use `-1` for the whole path to the root, `0` for none, or `n` (`n >= 1`) to keep levels 1 (immediate parent) through `n`. Values below `-1` are invalid and return a `400`. Only read when `keep_hierarchy` is `true`; otherwise it's ignored without being validated.
+  Default = `-1`
 
 The following query API is also provided on the querier service for _debugging_ purposes.
 
@@ -760,6 +766,9 @@ This endpoint is experimental. The request and response formats may change in fu
 This endpoint compares two complete traces. Send a `POST` request with a JSON
 body that identifies both traces by their IDs. Partial traces are rejected.
 
+This endpoint uses the same `max_bytes_per_trace` limit as
+[querying a trace by ID](#query-v2).
+
 ```
 POST /api/v2/traces/diff
 ```
@@ -799,12 +808,15 @@ Parameters:
 - `format`
   Optional. Output format. The default is `trace-patch-v0`. Use
   `trace-summary-v0-native` for only the compact summary or
-  `trace-summary-v0-composed` for the summary with a size-bounded patch.
+  `trace-summary-v0-composed` for the summary with a patch attachment limited to
+  64 KiB.
 
-The composed response always includes a native summary. It includes the full
-patch when the serialized patch is no larger than 64 KiB. Otherwise,
-`patchOmitted` reports the patch size and the reason `over_budget`; send another
-request with `format` set to `trace-patch-v0` to retrieve it.
+The composed response always includes a native summary. If the full patch is larger
+than 64 KiB, `patchOmitted` reports its serialized size and the reason `over_budget`.
+Request `trace-patch-v0` only when span-level evidence is required and the client can
+accept the reported patch size. The 64 KiB limit applies only to the attached patch;
+neither the complete composed response nor the full patch response has a hard output
+size limit.
 
 When `start` and `end` are provided, the request validates that `start` is
 before `end` and limits the block search to that time range. If omitted, Tempo

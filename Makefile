@@ -21,7 +21,7 @@ GORELEASER := $(GOPATH)/bin/goreleaser
 LOKI_BUILD_IMAGE ?= grafana/loki-build-image:0.35.0
 # https://hub.docker.com/repository/docker/grafana/tempo-ci-tools/
 # built by: .github/workflows/docker-ci-tools.yml
-TEMPO_CI_TOOLS_IMAGE ?= grafana/tempo-ci-tools:main-3f54f1c-20260716-212549
+TEMPO_CI_TOOLS_IMAGE ?= grafana/tempo-ci-tools:main-7e3ad96-20260916-174433
 DOCS_IMAGE ?= grafana/docs-base:latest
 
 # More exclusions can be added similar with: -not -path './testbed/*'
@@ -95,6 +95,27 @@ tempo-cli: ## Build tempo-cli
 .PHONY: tempo-vulture  ## Build tempo-vulture
 tempo-vulture:
 	$(GO_ENV) go build $(GO_OPT) -o ./bin/$(GOOS)/tempo-vulture-$(GOARCH) $(BUILD_INFO) ./cmd/tempo-vulture
+
+# tempo-v2.yaml and the nomad example are excluded on purpose - v2 targets an old release, nomad's README already flags it as unmaintained for 3.x.
+CONFIGS_TO_VERIFY = tools/packaging/tempo.yaml \
+	example/docker-compose/debug/tempo.yaml \
+	example/docker-compose/distributed/tempo.yaml \
+	example/docker-compose/multitenant/tempo.yaml \
+	example/docker-compose/single-binary/tempo.yaml \
+	example/docker-compose/migrate-to-3/tempo-v3.yaml
+
+.PHONY: check-configs
+check-configs: tempo ## Verify the packaged and example configs parse against the built binary
+	@fail=0; \
+	for f in $(CONFIGS_TO_VERIFY); do \
+		if ./bin/$(GOOS)/tempo-$(GOARCH) -config.file=$$f -config.verify=true -config.verify-errors-only=true; then \
+			echo "OK: $$f"; \
+		else \
+			echo "INVALID CONFIG: $$f"; \
+			fail=1; \
+		fi; \
+	done; \
+	exit $$fail
 
 .PHONY: exe  ## Build exe
 exe:
@@ -367,7 +388,7 @@ update-mod: tools-update-mod ## Update module
 
 ### Release (intended to be used in the .github/workflows/release.yml)
 $(GORELEASER):
-	go install github.com/goreleaser/goreleaser/v2@v2.16.0
+	go install github.com/goreleaser/goreleaser/v2@v2.18.2
 
 .PHONY: release
 release: $(GORELEASER)  ## Release 
