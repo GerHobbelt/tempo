@@ -1180,17 +1180,9 @@ query_frontend:
         # configured in the querier.
         [external_enabled: <bool> | default = false]
 
-        # Enable span pruning support for trace-by-ID v2 requests. When enabled, requests
-        # to the v2 endpoint can opt in to span pruning post-processing via the
-        # `span_pruning` query parameter. When disabled, the query parameter is ignored
-        # and no pruning occurs regardless of the request.
-        # EXPERIMENTAL
-        [span_pruning_enabled: <bool> | default = false]
-
         # Make span pruning default to enabled for trace-by-ID v2 requests that don't set their
         # own `span_pruning` query parameter. An explicit `span_pruning` value in the request,
-        # true or false, always takes precedence over this default. Only takes effect when
-        # span_pruning_enabled is also true.
+        # true or false, always takes precedence over this default.
         # EXPERIMENTAL
         [span_pruning_enabled_by_default: <bool> | default = false]
 
@@ -2158,6 +2150,10 @@ The `compaction` configuration block is used by the scheduler and worker.
 [retention_concurrency: <int> | default=10]
 
 # Optional
+# Number of blocks to clear in parallel within a single tenant's retention pass.
+[retention_block_concurrency: <int> | default=4]
+
+# Optional
 # The maximum amount of time to spend compacting a single tenant before moving to the next.
 [max_time_per_tenant: <duration> | default=5m]
 
@@ -2478,9 +2474,7 @@ overrides:
       # Per-tenant override for the query-frontend's span_pruning_enabled_by_default config.
       # When set, overrides whether span pruning defaults to enabled for trace-by-id v2 requests
       # that don't set their own span_pruning param. When not set, the cluster-wide config value
-      # is used. Only takes effect when span pruning is enabled cluster-wide (span_pruning_enabled).
-      # Note: this is a per-tenant default override, not a per-tenant kill switch — it has no effect
-      # unless span pruning is already enabled cluster-wide.
+      # is used.
       [span_pruning_enabled: <bool>]
 
     # Compaction related overrides
