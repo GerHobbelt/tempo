@@ -1,35 +1,14 @@
-## main / unreleased
+<!-- next version -->
 
-* [SECURITY] jsonnet: bump `memcached` to `1.6.42-alpine` and `prom/memcached-exporter` to `v0.16.0` to clear accumulated CVEs. [#7244](https://github.com/grafana/tempo/pull/7244) (@zhxiaogg)
-* [ENHANCEMENT] tempo-mixin: update backendwork dashboard with a Redaction section (active jobs, created/completed/failed/dropped by tenant, job duration), add Dropped and Job Duration panels to the Jobs row, and fix the Retry metric name (`jobs_retry` -> `jobs_retry_total`). [#7184](https://github.com/grafana/tempo/pull/7184) (@zalegrala)
-* [ENHANCEMENT] querier: limit external endpoint response size to querier grpc MaxSendMsgSize. [#7240](https://github.com/grafana/tempo/pull/7240) (@electron0zero)
-* [FEATURE] jsonnet: Add KEDA autoscaling for live-store via Prometheus trigger on expected bytes held. Enable with `live_store.keda.enabled: true`. Configure block-builder coupling via `live_store.keda.block_builder_scaling`: `'rollout-operator'` (default, requires `rollout_operator_replica_template_access_enabled: true`) mirrors live-store zone-a replicas to block-builder; `'keda'` creates a dedicated block-builder KEDA ScaledObject using a kubernetes-workload trigger without requiring rollout-operator RBAC. [#7142](https://github.com/grafana/tempo/pull/7142) (@zachfi)
-* [SECURITY] backend-scheduler: fix cross-tenant escalation in SubmitRedaction -- tenant is now sourced exclusively from the authenticated request context (X-Scope-OrgID header) and the body tenant_id field is ignored. [#7153](https://github.com/grafana/tempo/pull/7153) (@zalegrala)
-* [ENHANCEMENT] backend-scheduler: eliminate O(256·M) shard scan in `HasJobsForTenant` and O(N) prefix scan in `BusyBlocksForTenant` via secondary indexes; `HasJobsForTenant` is now O(1), `BusyBlocksForTenant` is now O(|tenant blocks|). Add `splitPendingBlockKey` helper to centralise pending-block key parsing and decouple all index maintenance sites from the encoded key format. [#7141](https://github.com/grafana/tempo/pull/7141) (@zalegrala)
-* [ENHANCEMENT] tempodb: add `tempodb_cache_store_size_bytes` histogram labelled by `role` recording the size of every item written to the backend cache. [#7152](https://github.com/grafana/tempo/pull/7152) (@javiermolinar)
-* [ENHANCEMENT] Add `TempoDistributorKafkaProduceFailing` alert that triggers when Kafka records cannot be produced by the distributor. [#7148](https://github.com/grafana/tempo/pull/7148) (@javiermolinar)
-* [ENHANCEMENT] **BREAKING CHANGE** Query-frontend: new job sharding approach for trace lookups, using a new config option `blocks_per_shard` which replaces `query_shards`. [#7105](https://github.com/grafana/tempo/pull/7105) (@mdisibio)
-* [ENHANCEMENT] jsonnet: add `autoscaling_prometheus_url` and `autoscaling_prometheus_tenant` top-level config fields for KEDA autoscaling. Setting `autoscaling_prometheus_tenant` sends an `X-Scope-OrgID` header on all Prometheus trigger requests, which is required when the backend is a multi-tenant system such as Grafana Mimir. [#7099](https://github.com/grafana/tempo/pull/7099) (@zachfi)
-* [ENHANCEMENT] live-store: expose query inspected bytes as a metric. [#7162](https://github.com/grafana/tempo/pull/7162) [#7163](https://github.com/grafana/tempo/pull/7163) (@zhxiaogg)
-* [ENHANCEMENT] tempodb: evict bloom filter and trace-id-index cache entries for blocks deleted during retention, freeing cache space for active blocks sooner. [#7204](https://github.com/grafana/tempo/pull/7204) (@zalegrala)
-* [ENHANCEMENT] cache: add `Remove` method to the `Cache` interface, implemented for memcached and redis. [#7204](https://github.com/grafana/tempo/pull/7204) (@zalegrala)
-* [BUGFIX] backend-scheduler: fix redaction batch not cleaned up after dead-job timeout, leaving tenant permanently blocked from new redaction submissions and compaction. [#6992](https://github.com/grafana/tempo/pull/6992) (@zalegrala)
-* [BUGFIX] backend-scheduler: fix outstanding-blocks metric suppressed to zero during active redaction batch, causing autoscaler to scale down workers mid-redaction. [#6992](https://github.com/grafana/tempo/pull/6992) (@zalegrala)
-* [BUGFIX] backend-scheduler: fix O(N) lock contention in GetJobForWorker under concurrent worker load; replace shard scan with O(1) index lookup. [#6992](https://github.com/grafana/tempo/pull/6992) (@zalegrala)
-* [BUGFIX] livestore: write the per-block query-range response cache atomically (temp file + rename) and log+ignore cache read errors. [#7155](https://github.com/grafana/tempo/pull/7155) (@zhxiaogg)
-* [ENHANCEMENT] TraceQL metrics: enable new span-only fetch by default. Can be disabled per-tenant via `metrics_spanonly_fetch: false` or per-query via the unsafe hint `with(spanonly_fetch=false)`. [#7179](https://github.com/grafana/tempo/pull/7179) (@mdisibio)
-* [BUGFIX] Better validation for query_range endpoint: do not accept negative step [#7221](https://github.com/grafana/tempo/pull/7221) (@ruslan-mikhailov)
-* [BUGFIX] user-configurable overrides: emit duration fields as flat YAML scalars on `/status/overrides/{tenant}` and omit `generate_native_histograms` when unset. [#7138](https://github.com/grafana/tempo/pull/7138) (@electron0zero)
-* [BUGFIX] Fix unsafe quoting in query attributes [#7220](https://github.com/grafana/tempo/pull/7220) (@ruslan-mikhailov)
-* [FEATURE] Support arithmetic operations in TraceQL Metrics [#6866](https://github.com/grafana/tempo/pull/6866) (@ruslan-mikhailov)
-* [BUGFIX] Fix rare cache collision between instant and range metrics queries [#7290](https://github.com/grafana/tempo/pull/7290) (@ruslan-mikhailov)
+# v3.0.2
+
+* [CHANGE] Upgrade Tempo to Go 1.26.3 [#7423](https://github.com/grafana/tempo/pull/7423) (@ie-pham)
 
 # v3.0.0
 
 * [CHANGE] **BREAKING CHANGE** Recent data queries guarantee complete results by failing when an instance is lagging. Defaults `query_frontend.query_end_cutoff` to `30s` and `live_store.fail_on_high_lag` to `true`. [#7210](https://github.com/grafana/tempo/pull/7210) (@mapno)
 * [CHANGE] **BREAKING CHANGE** user-configurable overrides config `metrics_generator.processors` no longer merges with runtime overrides. `metrics_generator.processors` now takes precedence over the runtime overrides, matching every other config in user-configurable overrides. Setting `processors: []` disables all processors for the tenant. [#7176](https://github.com/grafana/tempo/pull/7176) (@electron0zero)
 * [CHANGE] Stop publishing 32-bit ARM binary archives. Release artifacts continue to include amd64 and arm64 binaries. [#7106](https://github.com/grafana/tempo/pull/7106) (@javiermolinar)
-
 * [CHANGE] **BREAKING CHANGE** Remove duplicate "compaction" prefix from CompactorConfig CLI flags. Affected flags: `compaction.block-retention`, `compaction.max-objects-per-block`, `compaction.max-block-bytes`, `compaction.compaction-window`. [#6909](https://github.com/grafana/tempo/pull/6909) (@electron0zero)
 * [CHANGE] **BREAKING CHANGE** Enable RetryInfo by default. `distributor.retry_after_on_resource_exhausted` now defaults to `5s` (was `0`) so OTLP clients receive a retry hint on `ResourceExhausted` errors. [#7088](https://github.com/grafana/tempo/pull/7088) (@electron0zero)
   Set to `0` to disable cluster-wide, or set the per-tenant override `ingestion.retry_info_enabled: false` to disable for a single tenant.
@@ -163,6 +142,24 @@
 * [CHANGE] **BREAKING CHANGE** Sets the `all` target to be 3.0 compatible and removes the `scalable-single-binary` target [#6283](https://github.com/grafana/tempo/pull/6283) (@joe-elliott)
 * [CHANGE] **BREAKING CHANGE** Clean up enterprise jsonnet [#6505](https://github.com/grafana/tempo/pull/6505) (@javiermolinar)
 * [CHANGE] Expose otlp http and grpc ports for Docker examples [#6296](https://github.com/grafana/tempo/pull/6296) (@javiermolinar)
+
+# v2.10.7
+
+* [CHANGE] Stop publishing 32-bit ARM binary archives. Release artifacts continue to include amd64 and arm64 binaries. [#7106](https://github.com/grafana/tempo/pull/7106) (@javiermolinar)
+* [BUGFIX] Fix incorrect version reported by `--version`, the build-info metric, and `/api/status/buildinfo`. The build version is now read from the new top-level VERSION file instead of the most recently created git tag, which could belong to a different release. [#7469](https://github.com/grafana/tempo/pull/7469) (@zhxiaogg)
+
+# v2.10.6
+
+* [CHANGE] **BREAKING CHANGE** Remove Opencensus receiver [#7322](https://github.com/grafana/tempo/pull/7322) (@zhxiaogg)
+* [CHANGE] Upgrade Tempo to Go 1.26.3 [#7422](https://github.com/grafana/tempo/pull/7422) (@ie-pham)
+* [CHANGE] Update Prometheus to v0.311.3 and OpenTelemetry Collector dependencies to v1.52, along with related transitive dependencies (dskit and others) [#7298](https://github.com/grafana/tempo/pull/7298) (@zhxiaogg)
+* [SECURITY] Update github.com/apache/thrift to v0.23.0 to pick up upstream security fixes [#7120](https://github.com/grafana/tempo/pull/7120) (@renovate)
+* [SECURITY] Update golang.org/x/crypto to v0.52.0 to pick up upstream security fixes [#7262](https://github.com/grafana/tempo/pull/7262) (@renovate)
+* [SECURITY] Update golang.org/x/net to v0.55.0 to pick up upstream security fixes [#7129](https://github.com/grafana/tempo/pull/7129) [#7263](https://github.com/grafana/tempo/pull/7263) (@renovate)
+
+# v2.10.5
+
+* [CHANGE] Upgrade Tempo to Go 1.26.2 [#7040](https://github.com/grafana/tempo/pull/7040) (@ie-pham)
 
 # v2.10.4
 

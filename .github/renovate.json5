@@ -9,7 +9,6 @@
   ],
   baseBranchPatterns: [
     'main',
-    'release-v2.8',
     'release-v2.9',
     'release-v2.10',
     '/^release-v3.*/',
@@ -82,6 +81,17 @@
       ],
       matchDepNames: ['go', 'golang', 'grafana/tempo-ci-tools'],
       enabled: true,
+    },
+    {
+      description: 'Group all Go module patch updates into a single PR',
+      matchManagers: [
+        'gomod',
+      ],
+      matchUpdateTypes: [
+        'patch',
+        'digest',
+      ],
+      groupName: 'gomod patch updates',
     },
     {
       description: 'Group OpenTelemetry OTEL updates',
