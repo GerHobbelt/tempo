@@ -1,4 +1,4 @@
-package api
+package tracebyid
 
 import (
 	"encoding/hex"
@@ -6,11 +6,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/grafana/tempo/integration/util"
-	"github.com/grafana/tempo/pkg/tempopb"
-	commonv1 "github.com/grafana/tempo/pkg/tempopb/common/v1"
-	tracev1 "github.com/grafana/tempo/pkg/tempopb/trace/v1"
-	"github.com/grafana/tempo/pkg/util/test"
+	"github.com/grafana/tempo/v3/integration/util"
+	"github.com/grafana/tempo/v3/pkg/tempopb"
+	commonv1 "github.com/grafana/tempo/v3/pkg/tempopb/common/v1"
+	tracev1 "github.com/grafana/tempo/v3/pkg/tempopb/trace/v1"
+	"github.com/grafana/tempo/v3/pkg/util/test"
 )
 
 // buildSpanPruningTrace returns a trace with a single root span and n identical "leaf-op"

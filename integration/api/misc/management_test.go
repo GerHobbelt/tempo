@@ -1,10 +1,10 @@
-package api
+package misc
 
 import (
 	"net/http"
 	"testing"
 
-	"github.com/grafana/tempo/integration/util"
+	"github.com/grafana/tempo/v3/integration/util"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

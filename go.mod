@@ -1,4 +1,4 @@
-module github.com/grafana/tempo
+module github.com/grafana/tempo/v3
 
 go 1.27.1
 
@@ -431,11 +431,6 @@ require (
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.1 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
-)
-
-replace (
-	k8s.io/api => k8s.io/api v0.36.3
-	k8s.io/client-go => k8s.io/client-go v0.36.3
 )
 
 // Replace memberlist with our fork which includes some fixes that haven't been
