@@ -76,6 +76,18 @@ You can configure the backend using the following options:
 
 Each option applies only to the command in which it's used. For example, `--backend <value>` doesn't permanently change where Tempo stores data. It only changes it for command in which you apply the option.
 
+## TLS options
+
+All `query api` commands support these options for HTTPS and gRPC TLS connections.
+Use an `https://` URL for `trace-id`, or `--secure` for the other commands.
+
+- `--tls-cert <path>`, `--tls-key <path>` PEM client certificate and matching unencrypted private key for mutual TLS (mTLS).
+  Both must be provided together.
+- `--tls-ca <path>` PEM CA bundle used instead of the system trust roots for server certificate verification.
+- `--tls-server-name <name>` Override the server name used for certificate verification and SNI.
+
+The CA and server-name options can also be used without a client certificate.
+
 ## Query API command
 
 ### Trace ID
@@ -93,6 +105,7 @@ Arguments:
 
 Options:
 
+- [TLS options](#tls-options)
 - `--org-id <value>` Organization ID (for use in multi-tenant setup).
 - `--header <key=value>` Extra HTTP header to send with the request. Can be specified multiple times.
 - `--v1` use v1 API (use /api/traces endpoint to fetch traces, default: /api/v2/traces).
@@ -128,6 +141,7 @@ Arguments:
 
 Options:
 
+- [TLS options](#tls-options)
 - `--org-id <value>` Organization ID (for use in multi-tenant setup).
 - `--header <key=value>` Extra header to send with the request (as gRPC metadata when using `--use-grpc`). Can be specified multiple times.
 - `--use-grpc` Use GRPC streaming
@@ -180,6 +194,7 @@ Arguments:
 
 Options:
 
+- [TLS options](#tls-options)
 - `--org-id <value>` Organization ID (for use in multi-tenant setup).
 - `--header <key=value>` Extra header to send with the request (as gRPC metadata when using `--use-grpc`). Can be specified multiple times.
 - `--use-grpc` Use GRPC streaming
@@ -225,6 +240,7 @@ Arguments:
 
 Options:
 
+- [TLS options](#tls-options)
 - `--org-id <value>` Organization ID (for use in multi-tenant setup).
 - `--header <key=value>` Extra header to send with the request (as gRPC metadata when using `--use-grpc`). Can be specified multiple times.
 - `--query <value>` TraceQL query to filter attribute results by.
@@ -265,6 +281,7 @@ Arguments:
 
 Options:
 
+- [TLS options](#tls-options)
 - `--org-id <value>` Organization ID (for use in multi-tenant setup).
 - `--header <key=value>` Extra header to send with the request (as gRPC metadata when using `--use-grpc`). Can be specified multiple times.
 - `--use-grpc` Use GRPC streaming
@@ -519,6 +536,83 @@ Example:
 
 ```bash
 tempo-cli benchmark profile /data/traces/single-tenant/ca314fba-efec-4852-ba3f-8d2b0bbf69f1 --trace-ids=10000 -o profile.json
+```
+
+## Benchmark run
+
+Run read-path benchmark queries against a local block and write the measurements
+as JSON. Takes a profile from `benchmark profile`, so the run does not inspect
+the block and every variant of an experiment measures the same queries.
+
+```bash
+tempo-cli benchmark run <block-path> -p <profile.json>
+```
+
+Arguments:
+
+- `block-path` Path to the block directory on local disk, laid out as
+  `<bucket>/<tenant-id>/<block-id>`.
+
+Options:
+
+- `-p`, `--profile` Profile of the block, from `benchmark profile`. Required.
+- `-o`, `--out` File to write the result to. Defaults to stdout.
+- `--repeat` Passes over the query set. Defaults to `1`.
+- `--warmup` Passes to run and discard first. Defaults to `1`, which pays the
+  block's cold-read cost outside the measurement. Setting it to `0` measures
+  the first case cold and every later one warm.
+- `--target-bytes-per-request` Bytes per search shard, mirroring the query
+  frontend option of the same name. Defaults to `100MiB`.
+- `--search-limit` Traces a search returns per shard. Defaults to `20`.
+- `--max-series` Series a metrics query returns. Defaults to `1000`.
+- `--exemplars` Exemplars a metrics query collects. Defaults to `0`.
+- `--read-buffer-size`, `--read-buffer-count`, `--chunk-size-bytes`,
+  `--prefetch-trace-count` Storage read options. Each defaults to `0`, meaning
+  Tempo's default. These are the knobs an experiment varies.
+
+Each case records how many results it matched, and one `metrics` map. Two runs
+are only comparable if the match counts agree, so a difference there means the
+comparison is invalid rather than interesting.
+
+Every measurement has the same shape whatever its source, so nothing reading a
+result needs a rule per source:
+
+- `total` is the sum over the case for a `counter`, or the value left behind for
+  a `gauge`.
+- `summary` describes the per-execution values, with quantiles so a box plot
+  needs nothing else. A total on its own hides the tail, which on the read path
+  is usually the interesting part.
+
+Keys are `source.name`:
+
+- `harness.*` is what the benchmark timed itself: `wallNs`, `cpuNs`,
+  `allocBytes`, `allocCount`.
+- `backend.*` is object-store traffic: `reads`, `bytes`, `timeNs`.
+- `response.*` is what a query API reported, under Tempo's own metric names. A
+  metric Tempo did not report is absent rather than zero, because the two are
+  different claims, so a summary's `count` says how many executions reported it.
+- `process.*` is what Tempo emitted to its Prometheus registry, including the Go
+  runtime and process collectors.
+
+Metrics are collected rather than listed, so a metric added to Tempo appears
+without a change to the benchmark. Only metrics that moved are kept.
+
+The query set covers trace lookups by ID, present and absent; an unfiltered
+search; `rate()` and `rate() by (resource.service.name)` as metrics range
+queries; and tag-name lookups in each attribute scope. Metrics queries run over
+the block's whole time range, stepping at `max(60s, window/30)` to land about 30
+points. Searches and metrics queries are split into shards of row groups,
+mirroring how the query frontend splits a job.
+
+A case that fails is recorded with its error and the rest of the run continues.
+Benchmarking trace lookups reads the block's bloom filters, so a partial block
+copy without them can still be profiled but only its search cases will run.
+
+Example:
+
+```bash
+tempo-cli benchmark profile /data/traces/single-tenant/ca314fba-efec-4852-ba3f-8d2b0bbf69f1 -o profile.json
+tempo-cli benchmark run /data/traces/single-tenant/ca314fba-efec-4852-ba3f-8d2b0bbf69f1 -p profile.json -o result.json
 ```
 
 ## Query search command
