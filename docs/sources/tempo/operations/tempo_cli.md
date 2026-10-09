@@ -623,7 +623,8 @@ tempo-cli benchmark run /data/traces/single-tenant/ca314fba-efec-4852-ba3f-8d2b0
 ## Benchmark compare
 
 Compare two or more results from `benchmark run`,
-and write the comparison as markdown to stdout, to read or paste into a pull request.
+and write the comparison as markdown to stdout, to read or paste into a pull request,
+or serve it as web pages to explore.
 For each metric it lays every case out as benchstat does:
 the baseline's value, then each other run's value and its change from the baseline.
 
@@ -637,6 +638,19 @@ with the reason under the table:
 its match or execution count per pass differs, or it is missing the case or failed it.
 When a run's name is too long to head a column,
 runs are numbered, and listed with their numbers.
+
+With `--http`, it serves the comparison as web pages instead,
+rendered on each request as pprof's web view is.
+The summary page has a table per metric, with links to switch the metric and the percentile.
+Each case has a page with the box plots and table of every metric at once,
+and hovering a box plot's row shows its numbers.
+A box spans the 25th to 75th percentile, with a mark at the median.
+Its whisker runs from the minimum to the 99th percentile, with a tick at the 90th.
+The axis stops near the highest 99th percentile,
+so a maximum far past it is marked at the edge and written out,
+rather than squashing every box to make room for it.
+Clicking a run on either page makes it the baseline.
+As with pprof, an address without a host, like `:8080`, is served on localhost only.
 
 Arguments:
 
@@ -653,6 +667,8 @@ Options:
 - `--percentile` Percentile the summaries show:
   `min`, `p25`, `p50`, `p75`, `p90`, `p99`, or `max`.
   Defaults to `p99`, since tail latency is what hurts most.
+- `--http` Serve the comparison as web pages on this address, like `:8080`,
+  instead of writing markdown.
 
 A result given as a path is named after the settings that set it apart from the others:
 the run options and git SHA that differ between the runs,
@@ -675,11 +691,14 @@ since latencies from two environments are hard to compare.
 
 The summaries are per execution:
 one trace lookup, or one shard of a search, metrics, or tag-name query.
+The spread of a box is across those executions, not across repeated runs,
+so it describes how the inputs differ, not how noisy the measurement is.
 
 Example, where the runs are named `default`, `4MiB`, and `16MiB` from their read buffer sizes:
 
 ```bash
 tempo-cli benchmark compare main.json read-buffer-4mib.json read-buffer-16mib.json -k 'traceid/*' > comparison.md
+tempo-cli benchmark compare main.json read-buffer-4mib.json read-buffer-16mib.json --http=:8080
 ```
 
 ## Query search command
@@ -1196,7 +1215,7 @@ Options:
 
 - `--tenant <value>` **(required)** Tenant ID.
 - `--trace-id <value>` Trace ID to redact, in hex format. Repeat the flag for several traces in one request (`--trace-id=<ID> --trace-id=<ID>`, not comma-separated), up to 1000. Every job the redaction creates carries the whole list, so a longer list costs one copy per block; use `--query` instead. Mutually exclusive with `--query`.
-- `--query <value>` TraceQL query selecting the traces to redact, for example `{ span.http.status_code = 500 }`. Mutually exclusive with `--trace-id`. The query is restricted to a single spanset filter: `=` comparisons on the matched span's own `resource.*` or `span.*` attributes, joined by `&&` or `||`. Regular expressions, `!=` or ordered comparisons, `parent.`-scoped attributes, and pipelines or aggregates aren't supported.
+- `--query <value>` TraceQL query selecting the traces to redact, for example `{ span.http.status_code = 500 }`. Mutually exclusive with `--trace-id`. The query is restricted to a single spanset filter over the matched span's own `resource.*` or `span.*` attributes, joined by `&&` or `||`: `=` comparisons, and the existence check `attr != nil`. Regular expressions, `!=` against a value, ordered comparisons, `parent.`-scoped attributes, and pipelines or aggregates aren't supported.
 - `--dry-run` Evaluate the selector without rewriting any blocks. After the dry-run jobs complete, match counts are added to `tempo_backend_scheduler_redaction_traces_found_total` (`mode="dry_run"`). The command doesn't print the count (default: `false`).
 - `--start <value>` Start of the time window. Accepts `now`, a relative offset such as `now-7d`, or an RFC3339 timestamp. Must be given with `--end`, must be before `--end`, and cannot be combined with `--trace-id`. Omit both bounds to redact the whole tenant.
 - `--end <value>` End of the time window. Same forms as `--start`. Must be given with `--start`.
@@ -1205,6 +1224,8 @@ Options:
 - `--tls-ca <value>` Path to a PEM-encoded CA certificate file.
 
 You must provide exactly one of `--trace-id` or `--query`. Providing both, or neither, returns an error before the request is submitted.
+
+`attr != nil` is rewritten to an existence check, so it selects spans that **have** the attribute, not the ones missing it. Other `!=` forms are refused. This can be broader than it looks on a large tenant (`span.user_id != nil` matches every span carrying a user ID), so preview with `--dry-run` first.
 
 A tenant can have only one redaction in progress at a time, dry runs included.
 A submission made while an earlier one is still running, or still in its quiescence period, is rejected.
