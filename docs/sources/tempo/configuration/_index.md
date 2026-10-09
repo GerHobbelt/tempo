@@ -405,6 +405,9 @@ The default value is `2048`.
 Use the `tempo_distributor_attributes_truncated_total` metric to track how many attributes are truncated.
 This metric includes `tenant` and `scope` labels, where `scope` is one of `resource`, `scope`, `span`, `event`, or `link`.
 
+Use the `tempo_distributor_attribute_size_bytes` histogram to observe the size distribution of attributes as they are received.
+Like the counter, it includes `tenant` and `scope` labels, and each observation records the combined size of an attribute's key and string value. Every attribute is measured, whether or not it is truncated.
+
 When truncation occurs, the distributor also emits a rate-limited log line (at most one per second) with diagnostic details including the tenant, total truncated count, configured limit, and an example of the first truncated attribute (scope, name, field, and original size).
 
 For additional information, refer to [Troubleshoot out-of-memory errors](https://grafana.com/docs/tempo/<TEMPO_VERSION>/troubleshooting/out-of-memory-errors/).
@@ -1201,7 +1204,7 @@ query_frontend:
         [concurrent_jobs: <int> | default = 1000 ]
 
         # The target number of bytes for each job to handle when querying the backend.
-        [target_bytes_per_job: <int> | default = 100MiB ]
+        [target_bytes_per_job: <int> | default = 600MiB ]
 
         # The maximum allowed time range for a metrics query.
         # 0 disables this limit.
@@ -2414,6 +2417,12 @@ overrides:
       [max_global_traces_per_user: <int> | default = 0]
 
       # Shuffle sharding shards used for this user. A value of 0 uses all partitions.
+      # A good starting value is 1 shard per 5MB/s of ingest. For example, a tenant
+      # sending 2MB/s gets 1 shard, and a tenant sending 100MB/s gets 20 shards. Setting this
+      # value appropriately for the tenant volume is important to maintain balance between
+      # read and write resources. Setting this value too small increases pressure on block builders
+      # and live stores.  Setting this value too high causes many small blocks to be flushed, 
+      # increasing pressure on queriers, compaction, and polling.
       [tenant_shard_size: <int> | default = 0]
 
       # Maximum bytes any attribute can be for both keys and values.
@@ -2993,6 +3002,13 @@ cache:
             # Use consistent hashing to distribute keys to memcache servers.
             # (default: true)
             [consistent_hash: <bool>]
+
+            # Optional
+            # Pin this Tempo pod to this many Memcached proxy pods. The proxies
+            # must share the same backend cache pool and key-routing configuration.
+            # Overrides consistent_hash when positive; 0 disables pinning.
+            # (default: 0)
+            [pin_servers: <uint>]
 
             # Optional
             # The maximum size of an item stored in memcached, in bytes.
